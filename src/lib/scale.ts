@@ -65,3 +65,12 @@ export function mmToPx(mm: number, metersPerPixel: number | null): number {
 export function formatMm(mm: number): string {
   return `${numberFormat.format(mm)} mm`;
 }
+
+const areaFormat = new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+
+/** Formaterer et pikselareal (f.eks. fra polygonArea) som m². */
+export function formatAreaM2(pixelArea: number, metersPerPixel: number | null): string {
+  if (metersPerPixel == null) return '– m²';
+  const m2 = pixelArea * metersPerPixel * metersPerPixel;
+  return `${areaFormat.format(m2)} m²`;
+}

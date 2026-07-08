@@ -35,7 +35,7 @@ function symbolDetailKey(def: SymbolDef, props: Record<string, string | number>)
     const v = props[f.key];
     if (v === undefined || v === null || v === '') continue;
     if (f.kind === 'number' && Number(v) === 0) continue;
-    parts.push(f.kind === 'number' ? `${v}${f.unit ?? ''}` : String(v));
+    parts.push(f.unit ? `${v}${f.unit}` : String(v));
   }
   return parts.length > 0 ? parts.join(' · ') : 'Standard';
 }

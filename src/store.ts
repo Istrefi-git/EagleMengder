@@ -6,10 +6,13 @@ import type {
   BranchEntity,
   BranchFittingType,
   LineEntity,
+  MeasurementEntity,
+  MeasurementType,
   PipeRenderStyle,
   ScaleState,
   SymbolEntity,
   SymbolType,
+  TagEntity,
   Theme,
   ToolMode,
   TransitionEntity,
@@ -28,13 +31,53 @@ import { classifyBendAngle, polylineBendAngles } from './lib/geometry';
 let idCounter = 0;
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${idCounter++}`;
 
+/** Finner alle linjer som er transitivt forbundet med et sett med start-id-er, via delte
+ * endepunkter (samme koordinat innenfor toleranse) – brukes til å flytte en hel
+ * sammenhengende rør-/kanalstrekning som én rigid enhet (se nudgeSelected), slik at
+ * skjøtene ikke ryker når man flytter et enkelt segment med piltastene. */
+function findConnectedLineIds(pageLines: LineEntity[], seedIds: string[], eps = 0.5): Set<string> {
+  const endpointsOf = (l: LineEntity) => {
+    const n = l.points.length;
+    return [
+      { x: l.points[0], y: l.points[1] },
+      { x: l.points[n - 2], y: l.points[n - 1] },
+    ];
+  };
+  const visited = new Set<string>();
+  const queue = [...seedIds];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const line = pageLines.find((l) => l.id === id);
+    if (!line) continue;
+    const pts = endpointsOf(line);
+    for (const other of pageLines) {
+      if (visited.has(other.id)) continue;
+      const otherPts = endpointsOf(other);
+      const shares = pts.some((p) => otherPts.some((op) => Math.abs(p.x - op.x) < eps && Math.abs(p.y - op.y) < eps));
+      if (shares) queue.push(other.id);
+    }
+  }
+  return visited;
+}
+
 export interface ViewTransform {
   scale: number;
   x: number;
   y: number;
 }
 
-export type SelectedKind = 'line' | 'symbol' | 'branch' | 'transition' | 'annotation' | 'bend' | null;
+export type SelectedKind =
+  | 'line'
+  | 'symbol'
+  | 'branch'
+  | 'transition'
+  | 'annotation'
+  | 'bend'
+  | 'tag'
+  | 'measurement'
+  | null;
 
 export interface PendingBranchChoice {
   mainSubId: string;
@@ -54,6 +97,8 @@ export interface DrawSnapshot {
   branches: BranchEntity[];
   bends: BendEntity[];
   annotations: AnnotationEntity[];
+  tags: TagEntity[];
+  measurements: MeasurementEntity[];
 }
 
 const MAX_HISTORY = 50;
@@ -71,6 +116,9 @@ interface PersistedSettings {
   /** Egendefinerte dimensjoner lagt til per underkategori (f.eks. runde Ø-mål eller
    * rektangulære BxH-mål for kanaler som ikke finnes i standardsettet). */
   customDimensions: Record<string, string[]>;
+  /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen
+   * i CATEGORIES-katalogen. */
+  customColors: Record<string, string>;
 }
 
 function loadSettings(): PersistedSettings {
@@ -101,6 +149,14 @@ function loadSettings(): PersistedSettings {
               ),
             )
           : {},
+      customColors:
+        parsed.customColors && typeof parsed.customColors === 'object'
+          ? Object.fromEntries(
+              Object.entries(parsed.customColors as Record<string, unknown>).filter(
+                (entry): entry is [string, string] => typeof entry[1] === 'string',
+              ),
+            )
+          : {},
     };
   } catch {
     return defaultSettings();
@@ -116,6 +172,7 @@ function defaultSettings(): PersistedSettings {
     suppressOffLineWarning: false,
     customSystems: [],
     customDimensions: {},
+    customColors: {},
   };
 }
 
@@ -139,6 +196,7 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     suppressOffLineWarning: s.suppressOffLineWarning,
     customSystems: s.customSystems,
     customDimensions: s.customDimensions,
+    customColors: s.customColors,
     ...overrides,
   });
 }
@@ -172,6 +230,10 @@ interface AppState {
   bends: BendEntity[];
   /** Frittstående markup (tekst/sky) – påvirker ikke mengdelisten */
   annotations: AnnotationEntity[];
+  /** Merkelapper (tags) med leaderlinje, festet til rør/kanaler – viser rørtype/dimensjon */
+  tags: TagEntity[];
+  /** Frittstående mål (punkt-til-punkt avstand / rom-areal) – påvirker ikke mengdelisten */
+  measurements: MeasurementEntity[];
 
   // Verktøy / utvalg
   tool: ToolMode;
@@ -210,6 +272,8 @@ interface AppState {
   customSystems: string[];
   /** Egendefinerte dimensjoner lagt til per underkategori (runde eller rektangulære kanalmål osv.) */
   customDimensions: Record<string, string[]>;
+  /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen i katalogen. */
+  customColors: Record<string, string>;
   /** Sist brukt stil for nye tekst-/sky-annotasjoner */
   annotationConfig: { text: { color: string; fontSize: number }; cloud: { color: string; strokeWidth: number } };
 
@@ -329,6 +393,8 @@ interface AppState {
   removeCustomSystem: (code: string) => void;
   addCustomDimension: (subId: string, dimension: string) => void;
   removeCustomDimension: (subId: string, dimension: string) => void;
+  setCustomColor: (subId: string, color: string) => void;
+  resetCustomColor: (subId: string) => void;
 
   addAnnotation: (
     type: AnnotationType,
@@ -363,6 +429,14 @@ interface AppState {
   ) => void;
   setPendingBranchChoice: (choice: PendingBranchChoice | null) => void;
   resolvePendingBranchChoice: (fittingType: BranchFittingType) => void;
+  addTag: (lineId: string, x: number, y: number) => void;
+  updateTagLabel: (id: string, labelX: number, labelY: number) => void;
+  addMeasurement: (type: MeasurementType, points: number[]) => void;
+  /** Flytter valgt(e) linje(r) med (dx,dy) – flytter automatisk med hele den
+   * sammenhengende rør-/kanalstrekningen (delte endepunkter), samt tilhørende
+   * bend-/overgangs-/avgreiningsmarkører, tagger og montert utstyr, slik at
+   * alt fortsatt henger sammen visuelt etter flyttingen. */
+  nudgeSelected: (dx: number, dy: number, recordAsNewStep: boolean) => void;
 
   setStandardLength: (kind: 'pipe' | 'duct', mm: number) => void;
   setPipeRenderStyle: (style: PipeRenderStyle) => void;
@@ -413,6 +487,8 @@ export interface TilbudSnapshot {
   branches: BranchEntity[];
   bends: BendEntity[];
   annotations: AnnotationEntity[];
+  tags: TagEntity[];
+  measurements: MeasurementEntity[];
   scale: ScaleState;
   lineConfig: Record<string, { material: string; dimension: string }>;
   symbolConfig: Record<string, Record<string, string | number>>;
@@ -437,6 +513,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: s.branches,
       bends: s.bends,
       annotations: s.annotations,
+      tags: s.tags,
+      measurements: s.measurements,
     };
     set((st) => ({
       history: { past: [...st.history.past.slice(-(MAX_HISTORY - 1)), snapshot], future: [] },
@@ -464,6 +542,8 @@ export const useStore = create<AppState>((set, get) => {
   branches: [],
   bends: [],
   annotations: [],
+  tags: [],
+  measurements: [],
 
   tool: 'select',
   selectedId: null,
@@ -485,6 +565,7 @@ export const useStore = create<AppState>((set, get) => {
   showAirflowArrows: initialSettings.showAirflowArrows,
   customSystems: initialSettings.customSystems,
   customDimensions: initialSettings.customDimensions,
+  customColors: initialSettings.customColors,
   annotationConfig: {
     text: { color: '#1a1a1a', fontSize: 14 },
     cloud: { color: '#e74c3c', strokeWidth: 2 },
@@ -763,6 +844,21 @@ export const useStore = create<AppState>((set, get) => {
       return { customDimensions: next };
     }),
 
+  setCustomColor: (subId, color) =>
+    set((s) => {
+      const next = { ...s.customColors, [subId]: color };
+      persistSettings(s, { customColors: next });
+      return { customColors: next };
+    }),
+
+  resetCustomColor: (subId) =>
+    set((s) => {
+      const next = { ...s.customColors };
+      delete next[subId];
+      persistSettings(s, { customColors: next });
+      return { customColors: next };
+    }),
+
   addAnnotation: (type, x, y, extra) => {
     recordHistory();
     const cfg = get().annotationConfig[type];
@@ -842,6 +938,42 @@ export const useStore = create<AppState>((set, get) => {
     set((s) => ({ branches: [...s.branches, branch] }));
   },
 
+  addTag: (lineId, x, y) => {
+    recordHistory();
+    const tag: TagEntity = {
+      id: nextId('tag'),
+      page: get().currentPage,
+      lineId,
+      x,
+      y,
+      // Standard-forskyvning for tag-boksen, slik at den ikke havner rett oppå
+      // leaderlinjens ankerpunkt – brukeren kan dra den videre selv.
+      labelX: x + 40,
+      labelY: y - 40,
+    };
+    set((s) => ({ tags: [...s.tags, tag], selectedId: tag.id, selectedKind: 'tag' }));
+  },
+
+  updateTagLabel: (id, labelX, labelY) => {
+    recordHistory();
+    set((s) => ({ tags: s.tags.map((t) => (t.id === id ? { ...t, labelX, labelY } : t)) }));
+  },
+
+  addMeasurement: (type, points) => {
+    recordHistory();
+    const measurement: MeasurementEntity = {
+      id: nextId('measure'),
+      page: get().currentPage,
+      type,
+      points,
+    };
+    set((s) => ({
+      measurements: [...s.measurements, measurement],
+      selectedId: measurement.id,
+      selectedKind: 'measurement',
+    }));
+  },
+
   setPendingBranchChoice: (choice) => set({ pendingBranchChoice: choice }),
 
   resolvePendingBranchChoice: (fittingType) => {
@@ -898,6 +1030,10 @@ export const useStore = create<AppState>((set, get) => {
       set((s) => ({ bends: s.bends.filter((b) => b.id !== selectedId) }));
     } else if (selectedKind === 'annotation') {
       set((s) => ({ annotations: s.annotations.filter((a) => a.id !== selectedId) }));
+    } else if (selectedKind === 'tag') {
+      set((s) => ({ tags: s.tags.filter((t) => t.id !== selectedId) }));
+    } else if (selectedKind === 'measurement') {
+      set((s) => ({ measurements: s.measurements.filter((m) => m.id !== selectedId) }));
     }
     set({ selectedId: null, selectedKind: null });
   },
@@ -911,6 +1047,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: [],
       bends: [],
       annotations: [],
+      tags: [],
+      measurements: [],
       selectedId: null,
       selectedKind: null,
     });
@@ -933,6 +1071,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: s.branches,
       bends: s.bends,
       annotations: s.annotations,
+      tags: s.tags,
+      measurements: s.measurements,
     };
     set({
       ...previous,
@@ -954,6 +1094,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: s.branches,
       bends: s.bends,
       annotations: s.annotations,
+      tags: s.tags,
+      measurements: s.measurements,
     };
     set({
       ...next,
@@ -991,7 +1133,10 @@ export const useStore = create<AppState>((set, get) => {
       symbols: s.symbols.filter((sy) => !idSet.has(sy.id)),
       branches: s.branches.filter((b) => !idSet.has(b.id)),
       transitions: s.transitions.filter((t) => !idSet.has(t.id)),
+      bends: s.bends.filter((b) => !idSet.has(b.id)),
       annotations: s.annotations.filter((a) => !idSet.has(a.id)),
+      tags: s.tags.filter((t) => !idSet.has(t.id)),
+      measurements: s.measurements.filter((m) => !idSet.has(m.id)),
       multiSelection: new Set<string>(),
     }));
   },
@@ -1011,6 +1156,52 @@ export const useStore = create<AppState>((set, get) => {
         }
         return next;
       }),
+    }));
+  },
+
+  nudgeSelected: (dx, dy, recordAsNewStep) => {
+    const s = get();
+    let seedIds: string[] = [];
+    if (s.multiSelection.size > 0) {
+      seedIds = Array.from(s.multiSelection).filter((id) => s.lines.some((l) => l.id === id));
+    } else if (s.selectedKind === 'line' && s.selectedId) {
+      seedIds = [s.selectedId];
+    }
+    if (seedIds.length === 0) return;
+    if (recordAsNewStep) recordHistory();
+
+    const pageLines = s.lines.filter((l) => l.page === s.currentPage);
+    const movingIds = findConnectedLineIds(pageLines, seedIds);
+    // Samle alle punkter (før flytting) på de linjene som flyttes – brukes til å finne
+    // hvilke bend/overgang/avgreining-markører som satt akkurat på disse skjøtene, slik
+    // at de blir med på flyttingen i stedet for å bli liggende igjen på gammel plass.
+    const oldPoints: { x: number; y: number }[] = [];
+    for (const l of pageLines) {
+      if (!movingIds.has(l.id)) continue;
+      for (let i = 0; i + 1 < l.points.length; i += 2) {
+        oldPoints.push({ x: l.points[i], y: l.points[i + 1] });
+      }
+    }
+    const nearOld = (x: number, y: number, eps = 0.5) =>
+      oldPoints.some((p) => Math.abs(p.x - x) < eps && Math.abs(p.y - y) < eps);
+
+    set((st) => ({
+      lines: st.lines.map((l) =>
+        movingIds.has(l.id)
+          ? { ...l, points: l.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) }
+          : l,
+      ),
+      bends: st.bends.map((b) => (nearOld(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+      transitions: st.transitions.map((t) => (nearOld(t.x, t.y) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
+      branches: st.branches.map((b) => (nearOld(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+      tags: st.tags.map((t) =>
+        movingIds.has(t.lineId)
+          ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy }
+          : t,
+      ),
+      symbols: st.symbols.map((sy) =>
+        sy.mountedLineId && movingIds.has(sy.mountedLineId) ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
+      ),
     }));
   },
 
@@ -1044,6 +1235,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: s.branches,
       bends: s.bends,
       annotations: s.annotations,
+      tags: s.tags,
+      measurements: s.measurements,
       scale: s.scale,
       lineConfig: s.lineConfig,
       symbolConfig: s.symbolConfig,
@@ -1062,6 +1255,8 @@ export const useStore = create<AppState>((set, get) => {
         branches: [],
         bends: [],
         annotations: [],
+        tags: [],
+        measurements: [],
         scale: initialScale,
         autoDetected: null,
         lineConfig: {},
@@ -1081,6 +1276,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: snapshot.branches ?? [],
       bends: snapshot.bends ?? [],
       annotations: snapshot.annotations ?? [],
+      tags: snapshot.tags ?? [],
+      measurements: snapshot.measurements ?? [],
       scale: snapshot.scale,
       lineConfig: snapshot.lineConfig,
       symbolConfig: snapshot.symbolConfig ?? {},
@@ -1112,6 +1309,8 @@ export const useStore = create<AppState>((set, get) => {
       branches: [],
       bends: [],
       annotations: [],
+      tags: [],
+      measurements: [],
       tool: 'select',
       selectedId: null,
       selectedKind: null,

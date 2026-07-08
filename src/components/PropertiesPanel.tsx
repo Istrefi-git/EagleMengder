@@ -1,8 +1,17 @@
 import { Trash2 } from 'lucide-react';
 import { useStore } from '../store';
-import { CATEGORIES, SUBCATEGORIES, SYMBOL_DEFS, branchFittingLabel, categoryOf, mergedDimensions } from '../types';
-import { polylineLength } from '../lib/geometry';
-import { formatLengthMm } from '../lib/scale';
+import {
+  CATEGORIES,
+  SUBCATEGORIES,
+  SYMBOL_DEFS,
+  branchFittingLabel,
+  categoryOf,
+  colorFor,
+  mergedDimensions,
+  tagLabel,
+} from '../types';
+import { polygonArea, polylineLength } from '../lib/geometry';
+import { formatAreaM2, formatLengthMm } from '../lib/scale';
 
 export function PropertiesPanel() {
   const selectedId = useStore((s) => s.selectedId);
@@ -13,6 +22,8 @@ export function PropertiesPanel() {
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
   const annotations = useStore((s) => s.annotations);
+  const tags = useStore((s) => s.tags);
+  const measurements = useStore((s) => s.measurements);
   const updateAnnotation = useStore((s) => s.updateAnnotation);
   const scale = useStore((s) => s.scale);
   const updateLineProps = useStore((s) => s.updateLineProps);
@@ -24,6 +35,7 @@ export function PropertiesPanel() {
   const updateManyLineProps = useStore((s) => s.updateManyLineProps);
   const customSystems = useStore((s) => s.customSystems);
   const customDimensions = useStore((s) => s.customDimensions);
+  const customColors = useStore((s) => s.customColors);
 
   if (multiSelection.size > 0) {
     const ids = Array.from(multiSelection);
@@ -115,11 +127,12 @@ export function PropertiesPanel() {
     const sub = SUBCATEGORIES[line.subId];
     const cat = categoryOf(line.subId);
     const lenPx = polylineLength(line.points);
+    const subColor = colorFor(sub, customColors);
     return (
       <section className="properties-panel">
         <div className="panel-header">
           <h3>Egenskaper – linje</h3>
-          <span className="badge cat" style={{ borderColor: sub.color, color: sub.color }}>
+          <span className="badge cat" style={{ borderColor: subColor, color: subColor }}>
             {cat.code}
           </span>
         </div>
@@ -342,6 +355,57 @@ export function PropertiesPanel() {
         <button className="btn danger full" onClick={deleteSelected}>
           <Trash2 size={15} />
           Slett {note.type === 'text' ? 'tekst' : 'sky'}
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'tag') {
+    const tag = tags.find((t) => t.id === selectedId);
+    if (!tag) return null;
+    const line = lines.find((l) => l.id === tag.lineId);
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Tag</h3>
+        </div>
+        <div className="field readonly">
+          <span>Festet til</span>
+          <strong>{line ? `${SUBCATEGORIES[line.subId]?.label ?? line.subId}` : 'Slettet linje'}</strong>
+        </div>
+        {line && (
+          <div className="field readonly">
+            <span>Viser</span>
+            <strong>{tagLabel(line)}</strong>
+          </div>
+        )}
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett tag
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'measurement') {
+    const measurement = measurements.find((m) => m.id === selectedId);
+    if (!measurement) return null;
+    const isArea = measurement.type === 'area';
+    const value = isArea
+      ? formatAreaM2(polygonArea(measurement.points), scale.metersPerPixel)
+      : formatLengthMm(polylineLength(measurement.points), scale.metersPerPixel);
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – {isArea ? 'Areal' : 'Avstand'}</h3>
+        </div>
+        <div className="field readonly">
+          <span>{isArea ? 'Areal' : 'Lengde'}</span>
+          <strong>{value}</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett måling
         </button>
       </section>
     );

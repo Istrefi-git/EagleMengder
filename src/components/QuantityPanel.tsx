@@ -1,6 +1,6 @@
 import { ArrowRightLeft, CornerUpRight, GitFork, Link2, Maximize2, Minimize2 } from 'lucide-react';
 import { useStore } from '../store';
-import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER } from '../types';
+import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
 import { buildQuantityReport, categoryTotalMm } from '../lib/quantityReport';
 import { formatMm } from '../lib/scale';
 
@@ -10,6 +10,7 @@ export function QuantityPanel() {
   const transitions = useStore((s) => s.transitions);
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
+  const customColors = useStore((s) => s.customColors);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
   const focusMode = useStore((s) => s.focusMode);
@@ -70,6 +71,7 @@ export function QuantityPanel() {
           </div>
           {cat.subs.filter((sub) => subCount[sub.id] > 0).map((sub) => {
             const detail = subDetail[sub.id];
+            const subColor = colorFor(sub, customColors);
             return (
               <div key={sub.id} className="qty-sub">
                 <div className="qty-row">
@@ -77,8 +79,8 @@ export function QuantityPanel() {
                     <span
                       className="qty-swatch"
                       style={{
-                        background: cat.kind === 'duct' ? 'transparent' : sub.color,
-                        borderColor: sub.color,
+                        background: cat.kind === 'duct' ? 'transparent' : subColor,
+                        borderColor: subColor,
                         borderStyle: cat.kind === 'duct' ? 'dashed' : 'solid',
                       }}
                     />

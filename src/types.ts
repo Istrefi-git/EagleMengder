@@ -22,13 +22,17 @@ export type SymbolType =
 
 export type AnnotationType = 'text' | 'cloud';
 
+export type MeasurementType = 'distance' | 'area';
+
 export type ToolMode =
   | 'select'
   | 'pan'
   | 'calibrate'
+  | 'tag'
   | `line:${string}` // line:<underkategori-id>
   | `symbol:${SymbolType}`
-  | `annotation:${AnnotationType}`;
+  | `annotation:${AnnotationType}`
+  | `measure:${MeasurementType}`;
 
 export interface SubCategoryDef {
   /** Unik id, f.eks. "31.vv" */
@@ -58,6 +62,9 @@ export interface SymbolFieldDef {
   options?: string[];
   unit?: string;
   default: string | number;
+  /** Lar brukeren legge til egendefinerte verdier utover `options` (samme mønster som
+   * egendefinerte kanal-/rørdimensjoner), lagret i store.symbolDimensions[type]. */
+  customizable?: boolean;
 }
 
 export interface SymbolDef {
@@ -161,6 +168,40 @@ export interface AnnotationEntity {
   strokeWidth?: number;
 }
 
+/** Merkelapp (tag) med leaderlinje, festet til et rør/kanal – viser rørtype +
+ * dimensjon for rør, kun dimensjon for kanaler. Teksten er ikke lagret på selve
+ * taggen, men slås opp fra den tilknyttede linjen ved rendering, slik at den alltid
+ * viser riktig verdi selv om linjens dimensjon/materiale endres senere. */
+export interface TagEntity {
+  id: string;
+  page: number;
+  /** Id til røret/kanalen taggen er festet til */
+  lineId: string;
+  /** Ankerpunkt på selve røret/kanalen (der leaderlinjen starter) */
+  x: number;
+  y: number;
+  /** Posisjon for selve tag-boksen (der leaderlinjen ender og teksten vises) */
+  labelX: number;
+  labelY: number;
+}
+
+/** Teksten en tag skal vise for en gitt linje – rørtype + dimensjon for rør,
+ * kun dimensjon for kanaler (ventilasjon har ingen «rørtype» å vise). */
+export function tagLabel(line: LineEntity): string {
+  return isDuctSub(line.subId) ? line.dimension : `${line.material} · ${line.dimension}`;
+}
+
+/** Frittstående målepunkt/areal-måling («linjal»-verktøy) – punkt-til-punkt avstand
+ * eller et lukket rom-polygon for arealmåling. Rent visuelt hjelpemiddel, påvirker
+ * ikke mengdelisten. */
+export interface MeasurementEntity {
+  id: string;
+  page: number;
+  type: MeasurementType;
+  /** Punkter i bildets pikselrom – 2 punkter (4 tall) for avstand, ≥3 punkter for et lukket rom-polygon */
+  points: number[];
+}
+
 export interface ScaleState {
   /** Reelle meter per piksel i bildets koordinatrom. null = ikke satt. */
   metersPerPixel: number | null;
@@ -186,6 +227,8 @@ const KANAL_DIM = [
   'Ø100', 'Ø125', 'Ø160', 'Ø200', 'Ø250', 'Ø315', 'Ø400', 'Ø500',
   '200x100', '400x200', '500x300', '600x400', '800x500',
 ];
+const SILENCER_DIM = ['Ø125', 'Ø160', 'Ø200', 'Ø250', 'Ø315', 'Ø400', 'Ø500'];
+const SILENCER_LENGTH = ['300', '500', '600', '1000'];
 
 // ── Kategorihierarki ─────────────────────────────────────────────────────────
 
@@ -255,9 +298,22 @@ export function categoryOf(subId: string): CategoryDef {
  * dimensjoner brukeren har lagt til for akkurat den underkategorien (gjelder
  * både runde Ø-dimensjoner og rektangulære BxH-dimensjoner for kanaler). */
 export function mergedDimensions(sub: SubCategoryDef, customDimensions: Record<string, string[]>): string[] {
-  const custom = customDimensions[sub.id] ?? [];
-  const extra = custom.filter((d) => !sub.dimensions.includes(d));
-  return extra.length > 0 ? [...sub.dimensions, ...extra] : sub.dimensions;
+  return mergedOptions(sub.id, sub.dimensions, customDimensions);
+}
+
+/** Generisk variant av mergedDimensions – slår sammen en vilkårlig grunnliste med
+ * egendefinerte verdier lagret under en vilkårlig nøkkel. Brukes bl.a. for utstyrsfelt
+ * (f.eks. spjelds dimensjon), der nøkkelen er symboltypen i stedet for en underkategori-id. */
+export function mergedOptions(key: string, base: string[], customDimensions: Record<string, string[]>): string[] {
+  const custom = customDimensions[key] ?? [];
+  const extra = custom.filter((d) => !base.includes(d));
+  return extra.length > 0 ? [...base, ...extra] : base;
+}
+
+/** Fargen som faktisk skal brukes for en underkategori – brukerens egendefinerte
+ * farge (satt i verktøylinjen) hvis satt, ellers standardfargen fra katalogen. */
+export function colorFor(sub: SubCategoryDef, customColors: Record<string, string>): string {
+  return customColors[sub.id] ?? sub.color;
 }
 
 export function isDuctSub(subId: string): boolean {
@@ -334,14 +390,16 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
     type: 'damper',
     label: 'Spjeld',
     kind: 'duct',
-    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' }],
+    fields: [
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: KANAL_DIM, default: KANAL_DIM[0], customizable: true },
+    ],
   },
   vav_damper: {
     type: 'vav_damper',
     label: 'VAV-spjeld',
     kind: 'duct',
     fields: [
-      { key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' },
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: KANAL_DIM, default: KANAL_DIM[0], customizable: true },
       { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'l/s', default: 0 },
     ],
   },
@@ -350,7 +408,7 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
     label: 'CAV-spjeld',
     kind: 'duct',
     fields: [
-      { key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' },
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: KANAL_DIM, default: KANAL_DIM[0], customizable: true },
       { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'l/s', default: 0 },
     ],
   },
@@ -358,13 +416,17 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
     type: 'control_damper',
     label: 'Reguleringsspjeld',
     kind: 'duct',
-    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' }],
+    fields: [
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: KANAL_DIM, default: KANAL_DIM[0], customizable: true },
+    ],
   },
   fire_damper: {
     type: 'fire_damper',
     label: 'Brannspjeld',
     kind: 'duct',
-    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' }],
+    fields: [
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: KANAL_DIM, default: KANAL_DIM[0], customizable: true },
+    ],
   },
   silencer: {
     type: 'silencer',
@@ -372,8 +434,8 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
     kind: 'duct',
     fields: [
       { key: 'shape', label: 'Form', kind: 'select', options: ['Sirkulær', 'Rektangulær'], default: 'Sirkulær' },
-      { key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' },
-      { key: 'length', label: 'Lengde', kind: 'number', unit: 'mm', default: 600 },
+      { key: 'dimension', label: 'Dimensjon', kind: 'select', options: SILENCER_DIM, default: SILENCER_DIM[0] },
+      { key: 'length', label: 'Lengde', kind: 'select', options: SILENCER_LENGTH, default: SILENCER_LENGTH[1], unit: 'mm' },
     ],
   },
   supply_diffuser: {

@@ -1,5 +1,7 @@
 // Geometriske hjelpefunksjoner – alt i bildets pikselrom
 
+import type { LineEntity } from '../types';
+
 export function distance(x1: number, y1: number, x2: number, y2: number): number {
   return Math.hypot(x2 - x1, y2 - y1);
 }
@@ -11,6 +13,35 @@ export function polylineLength(points: number[]): number {
     total += distance(points[i], points[i + 1], points[i + 2], points[i + 3]);
   }
   return total;
+}
+
+/** Areal (i px²) av en lukket polygon gitt som [x0,y0,x1,y1,...] – shoelace-formelen.
+ * Polygonet trenger ikke være eksplisitt lukket (siste punkt ≠ første); det antas lukket. */
+export function polygonArea(points: number[]): number {
+  let sum = 0;
+  const n = points.length / 2;
+  for (let i = 0; i < n; i++) {
+    const x1 = points[i * 2];
+    const y1 = points[i * 2 + 1];
+    const j = (i + 1) % n;
+    const x2 = points[j * 2];
+    const y2 = points[j * 2 + 1];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/** Tyngdepunkt (enkel gjennomsnitt av hjørnene, ikke arealvektet) for plassering av
+ * arealetiketten midt i romfiguren. */
+export function polygonCentroid(points: number[]): { x: number; y: number } {
+  let sx = 0;
+  let sy = 0;
+  const n = points.length / 2;
+  for (let i = 0; i < n; i++) {
+    sx += points[i * 2];
+    sy += points[i * 2 + 1];
+  }
+  return { x: sx / n, y: sy / n };
 }
 
 // ── Bend-vinkler ─────────────────────────────────────────────────────────
@@ -161,5 +192,227 @@ export function snapNextPoint(
   return {
     x: cur.x + dist * Math.cos(snappedAngle),
     y: cur.y + dist * Math.sin(snappedAngle),
+  };
+}
+
+// ── Sammenhengende kanal-strekninger («runs») ───────────────────────────────
+//
+// Hvert rett strekk lagres som sin egen 2-punkts LineEntity (à la Revit), men
+// for at kanalens veggstreker skal se ut som ÉN sammenhengende kanal på
+// tegningen (ikke separate biter med hakk ved hvert bend/overgang), grupperes
+// tilstøtende segmenter av SAMME underkategori+materiale til én «run» her,
+// utelukkende via delte endepunkt-koordinater. Kun rene topunkts-skjøter (der
+// nøyaktig to segmenter møtes) kobles sammen – avgreiningspunkter (der tre+
+// segmenter møtes) er bevisst utelatt, siden en avgreining alt har sitt eget
+// T-/Y-symbol og ikke skal glattes ut.
+
+/** Nøkkel for punkt-gruppering (avrundet for å tåle ørsmå flyttall-avvik). */
+function pointKey(x: number, y: number): string {
+  return `${Math.round(x * 100)}:${Math.round(y * 100)}`;
+}
+
+function lineEndpoints(l: LineEntity): { start: { x: number; y: number }; end: { x: number; y: number } } {
+  const n = l.points.length;
+  return {
+    start: { x: l.points[0], y: l.points[1] },
+    end: { x: l.points[n - 2], y: l.points[n - 1] },
+  };
+}
+
+/** Grupperer et sett med linjer (typisk alle kanaler på gjeldende side) til
+ * sammenhengende strekninger for rendering – se forklaring over. */
+export function groupDuctRuns(lines: LineEntity[]): LineEntity[][] {
+  const pointMap = new Map<string, { lineId: string; end: 'start' | 'end' }[]>();
+  const addToMap = (k: string, entry: { lineId: string; end: 'start' | 'end' }) => {
+    const list = pointMap.get(k);
+    if (list) list.push(entry);
+    else pointMap.set(k, [entry]);
+  };
+  for (const l of lines) {
+    const { start, end } = lineEndpoints(l);
+    addToMap(pointKey(start.x, start.y), { lineId: l.id, end: 'start' });
+    addToMap(pointKey(end.x, end.y), { lineId: l.id, end: 'end' });
+  }
+  const byId = new Map(lines.map((l) => [l.id, l]));
+
+  function neighborAt(
+    line: LineEntity,
+    whichEnd: 'start' | 'end',
+  ): { lineId: string; end: 'start' | 'end' } | null {
+    const { start, end } = lineEndpoints(line);
+    const p = whichEnd === 'start' ? start : end;
+    const entries = pointMap.get(pointKey(p.x, p.y)) ?? [];
+    if (entries.length !== 2) return null; // avgreining eller løs ende – ikke en ren skjøt
+    const other = entries.find((e) => e.lineId !== line.id);
+    if (!other) return null;
+    const otherLine = byId.get(other.lineId);
+    if (!otherLine || otherLine.subId !== line.subId || otherLine.material !== line.material) return null;
+    return other;
+  }
+
+  const visited = new Set<string>();
+  const runs: LineEntity[][] = [];
+
+  for (const start of lines) {
+    if (visited.has(start.id)) continue;
+    const run: LineEntity[] = [start];
+    visited.add(start.id);
+
+    // Bakover fra startens "start"-ende
+    let cur = start;
+    let curEnd: 'start' | 'end' = 'start';
+    for (;;) {
+      const nb = neighborAt(cur, curEnd);
+      if (!nb) break;
+      const nextLine = byId.get(nb.lineId)!;
+      if (visited.has(nextLine.id)) break; // unngå uendelig løkke ved en lukket sløyfe
+      run.unshift(nextLine);
+      visited.add(nextLine.id);
+      cur = nextLine;
+      curEnd = nb.end === 'start' ? 'end' : 'start';
+    }
+
+    // Forover fra startens "end"-ende
+    cur = start;
+    curEnd = 'end';
+    for (;;) {
+      const nb = neighborAt(cur, curEnd);
+      if (!nb) break;
+      const nextLine = byId.get(nb.lineId)!;
+      if (visited.has(nextLine.id)) break;
+      run.push(nextLine);
+      visited.add(nextLine.id);
+      cur = nextLine;
+      curEnd = nb.end === 'start' ? 'end' : 'start';
+    }
+
+    runs.push(run);
+  }
+  return runs;
+}
+
+/** Flater en ordnet kjede av linjer til én sammenhengende punkt-liste (vertekser)
+ * pluss dimensjonen for hvert segment mellom to verteksene. Selvkorrigerende: for
+ * hver linje i kjeden brukes den enden som IKKE matcher forrige vertex, uavhengig
+ * av hvordan groupDuctRuns ordnet/orienterte linjene. */
+export function flattenDuctRun(run: LineEntity[]): { vertices: { x: number; y: number }[]; dims: string[] } {
+  const first = lineEndpoints(run[0]);
+  const vertices: { x: number; y: number }[] = [first.start, first.end];
+  const dims: string[] = [run[0].dimension];
+  for (let i = 1; i < run.length; i++) {
+    const { start, end } = lineEndpoints(run[i]);
+    const last = vertices[vertices.length - 1];
+    const startMatches = Math.abs(start.x - last.x) < 0.5 && Math.abs(start.y - last.y) < 0.5;
+    vertices.push(startMatches ? end : start);
+    dims.push(run[i].dimension);
+  }
+  return { vertices, dims };
+}
+
+export interface DuctRunWalls {
+  outer: number[];
+  inner: number[];
+  centerline: number[];
+}
+
+/** Finner skjæringspunktet mellom to uendelige linjer p1+t*d1 og p2+s*d2 (null hvis parallelle). */
+function lineIntersect(
+  p1: { x: number; y: number },
+  d1: { x: number; y: number },
+  p2: { x: number; y: number },
+  d2: { x: number; y: number },
+): { x: number; y: number } | null {
+  const denom = d1.x * d2.y - d1.y * d2.x;
+  if (Math.abs(denom) < 1e-6) return null;
+  const t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / denom;
+  return { x: p1.x + d1.x * t, y: p1.y + d1.y * t };
+}
+
+/** Bygger én av veggkonturene (ytre/indre/senterlinje, styrt av `sign`: +1/-1/0) for
+ * en hel kanal-strekning – med en avrundet fillet ved bend og en rett innsnevring
+ * (taper) ved dimensjonsendring, slik at streken blir sammenhengende uten hakk,
+ * i stedet for at hvert segment tegnes med butte, uavhengige endepunkter. */
+function buildOffsetPath(vertices: { x: number; y: number }[], halfWidths: number[], sign: number): number[] {
+  const n = vertices.length;
+  if (n < 2) return [];
+  const dirOf = (i: number) => {
+    const a = vertices[i];
+    const b = vertices[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: dx / len, y: dy / len, len };
+  };
+  const normalOf = (d: { x: number; y: number }) => ({ x: -d.y, y: d.x });
+  const offset = (p: { x: number; y: number }, norm: { x: number; y: number }, amount: number) => ({
+    x: p.x + norm.x * amount,
+    y: p.y + norm.y * amount,
+  });
+
+  const out: number[] = [];
+  const push = (p: { x: number; y: number }) => out.push(p.x, p.y);
+
+  const dir0 = dirOf(0);
+  push(offset(vertices[0], normalOf(dir0), halfWidths[0] * sign));
+
+  for (let i = 1; i < n - 1; i++) {
+    const dirIn = dirOf(i - 1);
+    const dirOut = dirOf(i);
+    const normIn = normalOf(dirIn);
+    const normOut = normalOf(dirOut);
+    const halfIn = halfWidths[i - 1];
+    const halfOut = halfWidths[i];
+    const v = vertices[i];
+
+    const cross = dirIn.x * dirOut.y - dirIn.y * dirOut.x;
+    const dot = dirIn.x * dirOut.x + dirIn.y * dirOut.y;
+    const angleDiff = Math.atan2(Math.abs(cross), dot);
+    const isBend = angleDiff > 0.02; // ~1°
+    const widthChanged = Math.abs(halfIn - halfOut) > 0.01;
+
+    if (!isBend && !widthChanged) {
+      push(offset(v, normIn, halfIn * sign));
+      continue;
+    }
+
+    const filletRadius = Math.max(halfIn, halfOut) * 1.2;
+    const taperHalfLen = Math.max(halfIn, halfOut) * 1.5;
+    const reach = isBend ? filletRadius : taperHalfLen;
+    const clipIn = Math.min(reach, dirIn.len * 0.4);
+    const clipOut = Math.min(reach, dirOut.len * 0.4);
+
+    const pIn = { x: v.x - dirIn.x * clipIn, y: v.y - dirIn.y * clipIn };
+    const pOut = { x: v.x + dirOut.x * clipOut, y: v.y + dirOut.y * clipOut };
+    const offIn = offset(pIn, normIn, halfIn * sign);
+    const offOut = offset(pOut, normOut, halfOut * sign);
+
+    push(offIn);
+    if (isBend) {
+      const ctrl = lineIntersect(offIn, dirIn, offOut, dirOut) ?? offset(v, normIn, halfIn * sign);
+      const steps = 8;
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps;
+        const x = (1 - t) * (1 - t) * offIn.x + 2 * (1 - t) * t * ctrl.x + t * t * offOut.x;
+        const y = (1 - t) * (1 - t) * offIn.y + 2 * (1 - t) * t * ctrl.y + t * t * offOut.y;
+        out.push(x, y);
+      }
+    }
+    push(offOut);
+  }
+
+  const dirLast = dirOf(n - 2);
+  push(offset(vertices[n - 1], normalOf(dirLast), halfWidths[n - 2] * sign));
+
+  return out;
+}
+
+/** Bygger de tre konturene (ytre vegg / indre vegg / senterlinje) for én hel
+ * kanal-strekning, gitt verteksene og pikselbredden (halv diameter) for hvert
+ * segment mellom dem. */
+export function buildDuctRunWalls(vertices: { x: number; y: number }[], halfWidths: number[]): DuctRunWalls {
+  return {
+    outer: buildOffsetPath(vertices, halfWidths, 1),
+    inner: buildOffsetPath(vertices, halfWidths, -1),
+    centerline: buildOffsetPath(vertices, halfWidths, 0),
   };
 }

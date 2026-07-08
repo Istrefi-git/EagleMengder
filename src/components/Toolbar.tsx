@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ComponentType } from 'react';
 import {
   ArrowDownToLine,
+  ArrowRightLeft,
   ArrowUpFromLine,
   ChevronDown,
   ChevronLeft,
@@ -11,10 +12,12 @@ import {
   EyeOff,
   GitFork,
   Hand,
+  LandPlot,
   MousePointer2,
   Plus,
   Ruler,
   Settings2,
+  Tag as TagIcon,
   Trash2,
   Type,
   Wrench,
@@ -34,7 +37,7 @@ import {
   VavDamperIcon,
 } from './equipmentIcons';
 import { useStore } from '../store';
-import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER } from '../types';
+import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
 import type { SubCategoryDef, SymbolType, ToolMode } from '../types';
 
 const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>> = {
@@ -70,6 +73,8 @@ export function Toolbar() {
   const customDimensions = useStore((s) => s.customDimensions);
   const addCustomDimension = useStore((s) => s.addCustomDimension);
   const removeCustomDimension = useStore((s) => s.removeCustomDimension);
+  const customColors = useStore((s) => s.customColors);
+  const setCustomColor = useStore((s) => s.setCustomColor);
   const disabled = !pdfDoc;
 
   // Alle kategorier starter lukket – brukeren åpner kun det som faktisk skal tegnes,
@@ -176,6 +181,8 @@ export function Toolbar() {
                       customDimensions={customDimensions[sub.id] ?? []}
                       onAddCustomDimension={(dimension) => addCustomDimension(sub.id, dimension)}
                       onRemoveCustomDimension={(dimension) => removeCustomDimension(sub.id, dimension)}
+                      color={colorFor(sub, customColors)}
+                      onSetColor={(color) => setCustomColor(sub.id, color)}
                     />
                   ))}
                 </div>
@@ -250,6 +257,13 @@ export function Toolbar() {
       </div>
 
       <div className="tool-section">
+        <span className="tool-heading">Verktøy</span>
+        <ToolButton mode="tag" label="Tag" icon={TagIcon} />
+        <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} />
+        <ToolButton mode="measure:area" label="Areal" icon={LandPlot} />
+      </div>
+
+      <div className="tool-section">
         <span className="tool-heading">Målestokk</span>
         <button
           className={`tool ${tool === 'calibrate' ? 'active' : ''}`}
@@ -289,6 +303,8 @@ interface SubPickerProps {
   customDimensions: string[];
   onAddCustomDimension: (dimension: string) => void;
   onRemoveCustomDimension: (dimension: string) => void;
+  color: string;
+  onSetColor: (color: string) => void;
 }
 
 function SubPicker({
@@ -305,6 +321,8 @@ function SubPicker({
   customDimensions,
   onAddCustomDimension,
   onRemoveCustomDimension,
+  color,
+  onSetColor,
 }: SubPickerProps) {
   const [newDimension, setNewDimension] = useState('');
 
@@ -322,14 +340,26 @@ function SubPicker({
         disabled={disabled}
         title={sub.label}
       >
-        <span
-          className="tool-swatch"
-          style={{
-            background: dashed ? 'transparent' : sub.color,
-            borderColor: sub.color,
-            borderStyle: dashed ? 'dashed' : 'solid',
-          }}
-        />
+        <label
+          className="tool-swatch-picker"
+          onClick={(e) => e.stopPropagation()}
+          title="Endre farge for denne underkategorien"
+        >
+          <span
+            className="tool-swatch"
+            style={{
+              background: dashed ? 'transparent' : color,
+              borderColor: color,
+              borderStyle: dashed ? 'dashed' : 'solid',
+            }}
+          />
+          <input
+            type="color"
+            className="tool-swatch-input"
+            value={color}
+            onChange={(e) => onSetColor(e.target.value)}
+          />
+        </label>
         <span className="tool-label-stack">
           <span className="tool-label">{sub.label}</span>
           {isActiveTool && config && (

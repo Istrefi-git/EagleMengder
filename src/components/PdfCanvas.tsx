@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva';
 import type Konva from 'konva';
-import { FileSearch, Lightbulb, X } from 'lucide-react';
+import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
 import { clampScale } from '../store';
 import { renderPage } from '../lib/pdf';
@@ -10,22 +10,42 @@ import {
   SYMBOL_DEFS,
   branchFittingLabel,
   categoryOf,
+  colorFor,
   defaultBranchFittingForPipe,
   getBendAngles,
   isDuctSub,
   mergedDimensions,
+  mergedOptions,
+  tagLabel,
 } from '../types';
-import type { AnnotationEntity, AnnotationType, BendEntity, BranchEntity, LineEntity, PipeRenderStyle, SymbolEntity } from '../types';
+import type {
+  AnnotationEntity,
+  AnnotationType,
+  BendEntity,
+  BranchEntity,
+  LineEntity,
+  MeasurementEntity,
+  MeasurementType,
+  PipeRenderStyle,
+  SymbolEntity,
+  TagEntity,
+} from '../types';
 import {
+  buildDuctRunWalls,
   classifyBendAngle,
   closestPointOnPolyline,
   distance,
+  flattenDuctRun,
+  groupDuctRuns,
+  polygonArea,
+  polygonCentroid,
   polylineBendAngles,
   polylineLength,
   snapFirstPoint,
   snapNextPoint,
 } from '../lib/geometry';
-import { formatLengthMm, mmToPx } from '../lib/scale';
+import type { DuctRunWalls } from '../lib/geometry';
+import { formatAreaM2, formatLengthMm, mmToPx } from '../lib/scale';
 import { dimensionDiameterMm } from '../lib/dimension';
 import { SymbolGlyph, BranchGlyph } from './symbols';
 import { PipeTube } from './PipeTube';
@@ -63,6 +83,8 @@ export function PdfCanvas() {
   const setAnnotationConfig = useStore((s) => s.setAnnotationConfig);
   const scale = useStore((s) => s.scale);
   const selectedId = useStore((s) => s.selectedId);
+  const selectedKind = useStore((s) => s.selectedKind);
+  const nudgeSelected = useStore((s) => s.nudgeSelected);
   const lineConfig = useStore((s) => s.lineConfig);
   const hoveredSymbolId = useStore((s) => s.hoveredSymbolId);
   const pipeRenderStyle = useStore((s) => s.pipeRenderStyle);
@@ -75,8 +97,15 @@ export function PdfCanvas() {
   const symbolConfig = useStore((s) => s.symbolConfig);
   const setSymbolConfig = useStore((s) => s.setSymbolConfig);
   const customDimensions = useStore((s) => s.customDimensions);
+  const addCustomDimension = useStore((s) => s.addCustomDimension);
+  const customColors = useStore((s) => s.customColors);
   const addTransition = useStore((s) => s.addTransition);
   const addBranch = useStore((s) => s.addBranch);
+  const tags = useStore((s) => s.tags);
+  const addTag = useStore((s) => s.addTag);
+  const updateTagLabel = useStore((s) => s.updateTagLabel);
+  const measurements = useStore((s) => s.measurements);
+  const addMeasurement = useStore((s) => s.addMeasurement);
   const setPendingBranchChoice = useStore((s) => s.setPendingBranchChoice);
   const updateLineConfigDimension = useStore((s) => s.updateLineConfigDimension);
   const setLineSelection = useStore((s) => s.setLineSelection);
@@ -108,8 +137,15 @@ export function PdfCanvas() {
   // brukes KUN til å beregne Shift-vinkelsnapping og en ev. bend-markør akkurat i skjøtepunktet,
   // uten å slå sammen det gamle segmentet med det nye (som fortsatt skal være separate enheter).
   const [continuationAnchor, setContinuationAnchor] = useState<{ x: number; y: number } | null>(null);
+  // Midlertidig tekst mens man legger til en egendefinert verdi på et "customizable"
+  // symbolfelt (f.eks. spjelds dimensjon) fra symbol-huden – key identifiserer hvilket
+  // felt inputen gjelder, siden bare ett felt kan redigeres om gangen.
+  const [customFieldInput, setCustomFieldInput] = useState<{ key: string; value: string } | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [calibPoints, setCalibPoints] = useState<number[]>([]);
+  // Pågående punkt-til-punkt/areal-måling (klikk for å legge til punkter, akkurat
+  // som kalibrering/linjetegning) – nullstilles når målingen fullføres eller avbrytes.
+  const [measureDraftPoints, setMeasureDraftPoints] = useState<number[]>([]);
   // Dimensjonen som brukes for resten av linjen man tegner nå (kan byttes midt i tegningen)
   const [draftDimension, setDraftDimension] = useState<string | null>(null);
   // Valgfritt egendefinert system (fra Innstillinger) for linjen/utstyret man tegner/plasserer nå
@@ -139,6 +175,8 @@ export function PdfCanvas() {
   const isSymbolTool = tool.startsWith('symbol:');
   const isAnnotationTool = tool.startsWith('annotation:');
   const annotationType = isAnnotationTool ? (tool.slice('annotation:'.length) as AnnotationType) : null;
+  const isMeasureTool = tool.startsWith('measure:');
+  const measureType = isMeasureTool ? (tool.slice('measure:'.length) as MeasurementType) : null;
   const isPan = tool === 'pan';
   const activeSubId = isLineTool ? tool.slice('line:'.length) : null;
   const activeSub = activeSubId ? SUBCATEGORIES[activeSubId] : null;
@@ -209,9 +247,13 @@ export function PdfCanvas() {
         setDraftPoints([]);
         setContinuationAnchor(null);
         setCalibPoints([]);
+        setMeasureDraftPoints([]);
         setTool('select');
       } else if (e.key === 'Enter' && draftPoints.length >= 4 && isLineTool) {
         finishLine();
+      } else if (e.key === 'Enter' && measureType === 'area' && measureDraftPoints.length >= 6) {
+        addMeasurement('area', measureDraftPoints);
+        setMeasureDraftPoints([]);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (multiSelection.size > 0) deleteMany(Array.from(multiSelection));
         else deleteSelected();
@@ -224,12 +266,35 @@ export function PdfCanvas() {
       ) {
         e.preventDefault();
         redo();
+      } else if (
+        tool === 'select' &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        (selectedKind === 'line' || multiSelection.size > 0)
+      ) {
+        // Flytter valgt(e) kanal/rør ett skjermpiksel av gangen (Shift for et større hopp) –
+        // nudgeSelected tar seg av å holde sammenhengende strekninger tilkoblet.
+        e.preventDefault();
+        const step = (e.shiftKey ? 10 : 1) * invScale;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        nudgeSelected(dx, dy, !e.repeat);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftPoints, isLineTool, multiSelection]);
+  }, [
+    draftPoints,
+    isLineTool,
+    multiSelection,
+    tool,
+    selectedKind,
+    invScale,
+    nudgeSelected,
+    measureType,
+    measureDraftPoints,
+    addMeasurement,
+  ]);
 
   // Avbryt pågående tegning når verktøy byttes, og forbered ny tegnesesjon
   useEffect(() => {
@@ -238,6 +303,7 @@ export function PdfCanvas() {
     setHoverSnap(null);
     setCloudDraft(null);
     setEditingAnnotationId(null);
+    setMeasureDraftPoints([]);
     if (tool.startsWith('line:')) {
       const subId = tool.slice('line:'.length);
       setDraftDimension(lineConfig[subId]?.dimension ?? null);
@@ -400,6 +466,13 @@ export function PdfCanvas() {
       setContinuationAnchor(null);
       addTransition(activeSubId, activeMaterial, draftDimension ?? '', newDimension, lastX, lastY);
       setDraftPoints([lastX, lastY]);
+    } else if (draftPoints.length === 2 && continuationAnchor) {
+      // Man har akkurat fortsatt et eksisterende rør/kanal (seedContinuation) og bytter
+      // dimensjon FØR neste punkt er klikket – draftPoints er da kun det ene forankrings-
+      // punktet, så det finnes ingen fersk strekning å dele opp ennå. Sett overgangen
+      // direkte i det punktet i stedet (continuationAnchor beholdes uendret – det peker
+      // fortsatt på det gamle rørets andre endepunkt for vinkelsnapping av neste segment).
+      addTransition(activeSubId, activeMaterial, draftDimension ?? '', newDimension, draftPoints[0], draftPoints[1]);
     }
     setDraftDimension(newDimension);
     updateLineConfigDimension(activeSubId, newDimension);
@@ -522,6 +595,33 @@ export function PdfCanvas() {
         else placeSymbolWithGuard(type, p.x, p.y, 0, undefined, sysId);
         return;
       }
+      if (tool === 'tag') {
+        // Tag festes kun til et rør/kanal – klikk i tomt rom gjør ingenting, siden
+        // en tag uten tilknyttet linje ikke har noe å vise.
+        let best: { x: number; y: number; distance: number; lineId: string } | null = null;
+        for (const line of lines) {
+          if (line.page !== currentPage) continue;
+          const cp = closestPointOnPolyline(line.points, p);
+          if (!cp) continue;
+          const dimMm = dimensionDiameterMm(line.dimension);
+          const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+          if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
+            best = { x: cp.x, y: cp.y, distance: cp.distance, lineId: line.id };
+          }
+        }
+        if (best) addTag(best.lineId, best.x, best.y);
+        return;
+      }
+      if (isMeasureTool && measureType) {
+        const next = [...measureDraftPoints, p.x, p.y];
+        if (measureType === 'distance' && next.length >= 4) {
+          addMeasurement('distance', next);
+          setMeasureDraftPoints([]);
+        } else {
+          setMeasureDraftPoints(next);
+        }
+        return;
+      }
       if (tool === 'calibrate') {
         const next = [...calibPoints, p.x, p.y];
         if (next.length >= 4) {
@@ -564,6 +664,11 @@ export function PdfCanvas() {
       calibPoints,
       setCalibrationDistance,
       clearSelection,
+      addTag,
+      isMeasureTool,
+      measureType,
+      measureDraftPoints,
+      addMeasurement,
     ],
   );
 
@@ -579,13 +684,13 @@ export function PdfCanvas() {
         if (p) setCloudDraft((cd) => (cd ? { ...cd, x1: p.x, y1: p.y } : cd));
         return;
       }
-      if (!isLineTool && !isSymbolTool && tool !== 'calibrate') {
+      if (!isLineTool && !isSymbolTool && tool !== 'calibrate' && !isMeasureTool) {
         setHoverSnap((h) => (h ? null : h));
         return;
       }
       const p = getImagePoint();
       if (!p) return;
-      if (isLineTool || tool === 'calibrate') {
+      if (isLineTool || tool === 'calibrate' || isMeasureTool) {
         setCursor(isLineTool ? computeLinePoint(p, e.evt.shiftKey) : p);
       }
 
@@ -627,6 +732,7 @@ export function PdfCanvas() {
       cloudDraft,
       isLineTool,
       isSymbolTool,
+      isMeasureTool,
       tool,
       getImagePoint,
       computeLinePoint,
@@ -687,11 +793,42 @@ export function PdfCanvas() {
       const ah = a.height ?? 0;
       return a.x <= x1 && a.x + aw >= x0 && a.y <= y1 && a.y + ah >= y0;
     });
+    // Automatisk genererte deler (bend/avgreining/overgang) er også punkt-entiteter på
+    // lerretet – tas med i rammevalget slik at de blir slettet sammen med kanalene/rørene
+    // man drar over, i stedet for at man må slette dem manuelt etterpå.
+    const branchHits = branches.filter(
+      (b) => b.page === currentPage && b.x >= x0 && b.x <= x1 && b.y >= y0 && b.y <= y1,
+    );
+    const transitionHits = transitions.filter(
+      (t) => t.page === currentPage && t.x >= x0 && t.x <= x1 && t.y >= y0 && t.y <= y1,
+    );
+    const bendHits = bends.filter(
+      (b) => b.page === currentPage && b.x >= x0 && b.x <= x1 && b.y >= y0 && b.y <= y1,
+    );
+    const tagHits = tags.filter(
+      (t) => t.page === currentPage && t.labelX >= x0 && t.labelX <= x1 && t.labelY >= y0 && t.labelY <= y1,
+    );
+    const measurementHits = measurements.filter((m) => {
+      if (m.page !== currentPage) return false;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i + 1 < m.points.length; i += 2) {
+        minX = Math.min(minX, m.points[i]);
+        maxX = Math.max(maxX, m.points[i]);
+        minY = Math.min(minY, m.points[i + 1]);
+        maxY = Math.max(maxY, m.points[i + 1]);
+      }
+      return minX <= x1 && maxX >= x0 && minY <= y1 && maxY >= y0;
+    });
     clearSelection();
     setMultiSelection([
       ...lineHits.map((l) => l.id),
       ...symbolHits.map((s) => s.id),
       ...annotationHits.map((a) => a.id),
+      ...branchHits.map((b) => b.id),
+      ...transitionHits.map((t) => t.id),
+      ...bendHits.map((b) => b.id),
+      ...tagHits.map((t) => t.id),
+      ...measurementHits.map((m) => m.id),
     ]);
   }, [
     rubberBand,
@@ -700,6 +837,11 @@ export function PdfCanvas() {
     lines,
     symbols,
     annotations,
+    branches,
+    transitions,
+    bends,
+    tags,
+    measurements,
     currentPage,
     hiddenCategories,
     clearSelection,
@@ -772,6 +914,11 @@ export function PdfCanvas() {
   // Dette er rent en visningsfilter for canvas – mengdelisten er uberørt.
   const isSubHidden = (subId: string) => hiddenCategories.has(categoryOf(subId)?.code ?? '');
   const visibleLines = lines.filter((l) => l.page === currentPage && !isSubHidden(l.subId));
+  // Kanalstrekninger (kun kanaler, ikke rør) gruppert til sammenhengende «runs» for
+  // veggtegning – se buildDuctRunWalls. Rendres i ett stykke per strekning slik at
+  // veggene blir sammenhengende (avrundet bend, innsnevret overgang), i stedet for at
+  // hvert 2-punkts segment tegnes uavhengig med butte endepunkter.
+  const ductRuns = groupDuctRuns(visibleLines.filter((l) => isDuctSub(l.subId)));
   const hiddenLineIds = new Set(
     lines.filter((l) => isSubHidden(l.subId)).map((l) => l.id),
   );
@@ -784,6 +931,14 @@ export function PdfCanvas() {
   const hoveredSymbol = symbols.find((sy) => sy.id === hoveredSymbolId) ?? null;
   const pageAnnotations = annotations.filter((a) => a.page === currentPage);
   const editingAnnotation = annotations.find((a) => a.id === editingAnnotationId) ?? null;
+  const pageTags = tags.filter((t) => t.page === currentPage && !isSubHidden(lines.find((l) => l.id === t.lineId)?.subId ?? ''));
+  const pageMeasurements = measurements.filter((m) => m.page === currentPage);
+  const measureDraftPreview =
+    isMeasureTool && measureDraftPoints.length > 0
+      ? cursor
+        ? [...measureDraftPoints, cursor.x, cursor.y]
+        : measureDraftPoints
+      : [];
 
   return (
     <div ref={containerRef} className="canvas-host" style={{ cursor: cursorStyle }}>
@@ -845,17 +1000,51 @@ export function PdfCanvas() {
               <label key={f.key} className="symbol-hud-field" title={`${f.label}${f.unit ? ` (${f.unit})` : ''} for neste plassering`}>
                 <span>{f.label}</span>
                 {f.kind === 'select' ? (
-                  <select
-                    className="draw-hud-select"
-                    value={String(cfg[f.key] ?? f.default)}
-                    onChange={(e) => setSymbolConfig(symType, { [f.key]: e.target.value })}
-                  >
-                    {f.options?.map((o) => (
-                      <option key={o} value={o}>
-                        {o}
-                      </option>
-                    ))}
-                  </select>
+                  <>
+                    <select
+                      className="draw-hud-select"
+                      value={String(cfg[f.key] ?? f.default)}
+                      onChange={(e) => setSymbolConfig(symType, { [f.key]: e.target.value })}
+                    >
+                      {mergedOptions(symType, f.options ?? [], customDimensions).map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                    {f.customizable &&
+                      (customFieldInput?.key === `${symType}:${f.key}` ? (
+                        <input
+                          className="symbol-hud-input symbol-hud-custom-input"
+                          autoFocus
+                          placeholder="Egendefinert"
+                          value={customFieldInput.value}
+                          onChange={(e) => setCustomFieldInput({ key: `${symType}:${f.key}`, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              const v = customFieldInput.value.trim();
+                              if (v) {
+                                addCustomDimension(symType, v);
+                                setSymbolConfig(symType, { [f.key]: v });
+                              }
+                              setCustomFieldInput(null);
+                            } else if (e.key === 'Escape') {
+                              setCustomFieldInput(null);
+                            }
+                          }}
+                          onBlur={() => setCustomFieldInput(null)}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn icon symbol-hud-add-btn"
+                          title="Legg til egendefinert verdi"
+                          onClick={() => setCustomFieldInput({ key: `${symType}:${f.key}`, value: '' })}
+                        >
+                          <Plus size={12} />
+                        </button>
+                      ))}
+                  </>
                 ) : (
                   <input
                     className="symbol-hud-input"
@@ -985,6 +1174,22 @@ export function PdfCanvas() {
 
         {/* Tegnelag: linjer + symboler */}
         <Layer>
+          {ductRuns.map((run, i) => {
+            const sub = SUBCATEGORIES[run[0].subId];
+            const { vertices, dims } = flattenDuctRun(run);
+            const halfWidths = dims.map(
+              (d) => Math.max(mmToPx(dimensionDiameterMm(d), scale.metersPerPixel), 5 * invScale) / 2,
+            );
+            const walls = buildDuctRunWalls(vertices, halfWidths);
+            return (
+              <DuctRunSchematic
+                key={run[0].id || i}
+                walls={walls}
+                color={colorFor(sub, customColors)}
+                invScale={invScale}
+              />
+            );
+          })}
           {visibleLines
             .map((line) => (
               <LineNode
@@ -1004,6 +1209,7 @@ export function PdfCanvas() {
                 onSplit={(x, y) => splitLineAt(line.id, x, y)}
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
+                customColors={customColors}
                 onVertexDragStart={beginHistoryBatch}
                 onVertexDragEnd={endHistoryBatch}
               />
@@ -1027,7 +1233,7 @@ export function PdfCanvas() {
               key={t.id}
               transition={t}
               invScale={invScale}
-              selected={t.id === selectedId}
+              selected={t.id === selectedId || multiSelection.has(t.id)}
               onSelect={() => select(t.id, 'transition')}
             />
           ))}
@@ -1036,7 +1242,7 @@ export function PdfCanvas() {
               key={b.id}
               branch={b}
               invScale={invScale}
-              selected={b.id === selectedId}
+              selected={b.id === selectedId || multiSelection.has(b.id)}
               onSelect={() => select(b.id, 'branch')}
             />
           ))}
@@ -1045,7 +1251,7 @@ export function PdfCanvas() {
               key={b.id}
               bend={b}
               invScale={invScale}
-              selected={b.id === selectedId}
+              selected={b.id === selectedId || multiSelection.has(b.id)}
               onSelect={() => select(b.id, 'bend')}
             />
           ))}
@@ -1061,10 +1267,51 @@ export function PdfCanvas() {
               onEditText={() => setEditingAnnotationId(note.id)}
             />
           ))}
+          {pageTags.map((t) => {
+            const line = lines.find((l) => l.id === t.lineId);
+            if (!line) return null;
+            const sub = SUBCATEGORIES[line.subId];
+            return (
+              <TagNode
+                key={t.id}
+                tag={t}
+                text={tagLabel(line)}
+                color={colorFor(sub, customColors)}
+                selected={t.id === selectedId || multiSelection.has(t.id)}
+                invScale={invScale}
+                editable={tool === 'select'}
+                onSelect={() => select(t.id, 'tag')}
+                onChange={(labelX, labelY) => updateTagLabel(t.id, labelX, labelY)}
+              />
+            );
+          })}
+          {pageMeasurements.map((m) => (
+            <MeasurementNode
+              key={m.id}
+              measurement={m}
+              metersPerPixel={scale.metersPerPixel}
+              selected={m.id === selectedId || multiSelection.has(m.id)}
+              invScale={invScale}
+              onSelect={() => select(m.id, 'measurement')}
+            />
+          ))}
         </Layer>
 
         {/* Overlegg: pågående tegning / kalibrering */}
         <Layer listening={false}>
+          {measureDraftPreview.length >= 4 && measureType === 'distance' && (
+            <Line points={measureDraftPreview} stroke="#7c4dff" strokeWidth={1.5 * invScale} dash={[6 * invScale, 4 * invScale]} />
+          )}
+          {measureDraftPreview.length >= 4 && measureType === 'area' && (
+            <Line
+              points={measureDraftPreview}
+              stroke="#7c4dff"
+              strokeWidth={1.5 * invScale}
+              dash={[6 * invScale, 4 * invScale]}
+              closed
+              fill="rgba(124,77,255,0.08)"
+            />
+          )}
           {rubberBand && (
             <Rect
               x={Math.min(rubberBand.x0, rubberBand.x1)}
@@ -1183,51 +1430,21 @@ export function PdfCanvas() {
   );
 }
 
-/** Forskyver en polylinje vinkelrett på sin retning med avstand `d` (positiv = venstre side).
- * Beregner riktig miter-offsett i hvert hjørnepunkt slik at kanalovervegene ser korrekte ut. */
-function offsetPolyline(pts: number[], d: number): number[] {
-  const n = pts.length / 2;
-  if (n < 2) return pts.slice();
-  const out: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const x = pts[i * 2], y = pts[i * 2 + 1];
-    let sx = 0, sy = 0, cnt = 0;
-    if (i > 0) {
-      const dx = x - pts[(i - 1) * 2], dy = y - pts[(i - 1) * 2 + 1];
-      const len = Math.hypot(dx, dy);
-      if (len > 0) { sx += -dy / len; sy += dx / len; cnt++; }
-    }
-    if (i < n - 1) {
-      const dx = pts[(i + 1) * 2] - x, dy = pts[(i + 1) * 2 + 1] - y;
-      const len = Math.hypot(dx, dy);
-      if (len > 0) { sx += -dy / len; sy += dx / len; cnt++; }
-    }
-    if (cnt === 0) { out.push(x, y); continue; }
-    sx /= cnt; sy /= cnt;
-    const slen2 = sx * sx + sy * sy;
-    if (slen2 < 0.04) { out.push(x, y); continue; }
-    const scale = Math.min(Math.abs(d) / slen2, 4 * Math.abs(d)) * Math.sign(d);
-    out.push(x + sx * scale, y + sy * scale);
-  }
-  return out;
-}
-
-/** Tegner en kanal som to parallelle vegglinjer + stiplet senterstripe (ingeniørtegning-stil). */
-function DuctSchematic({
-  points, diameterPx, color, invScale,
-}: { points: number[]; diameterPx: number; color: string; invScale: number }) {
-  const half = diameterPx / 2;
-  const wallPts1 = offsetPolyline(points, half);
-  const wallPts2 = offsetPolyline(points, -half);
+/** Tegner én hel sammenhengende kanal-strekning (se groupDuctRuns/buildDuctRunWalls) som
+ * to parallelle vegglinjer + stiplet senterstripe (ingeniørtegning-stil) – med avrundet
+ * fillet ved bend og innsnevret taper ved dimensjonsendring i stedet for hakk/sprang. */
+function DuctRunSchematic({
+  walls, color, invScale,
+}: { walls: DuctRunWalls; color: string; invScale: number }) {
   const sw = Math.max(1.5 * invScale, 0.4);
   return (
     <Group listening={false}>
-      <Line points={wallPts1} stroke={color} strokeWidth={sw} lineCap="butt" lineJoin="miter" />
-      <Line points={wallPts2} stroke={color} strokeWidth={sw} lineCap="butt" lineJoin="miter" />
+      <Line points={walls.outer} stroke={color} strokeWidth={sw} lineCap="round" lineJoin="round" />
+      <Line points={walls.inner} stroke={color} strokeWidth={sw} lineCap="round" lineJoin="round" />
       {/* Senterlinje som klassisk «dash-dot»-kjedestrek (lang strek – prikk – lang strek),
           konvensjonen for kanal-/rørsenterlinjer i ingeniørtegninger. */}
       <Line
-        points={points}
+        points={walls.centerline}
         stroke={color}
         strokeWidth={sw * 0.55}
         opacity={0.55}
@@ -1267,6 +1484,7 @@ interface LineNodeProps {
    * brukes til å manuelt legge til et knekkpunkt på et allerede tegnet strekk. */
   onSplit: (x: number, y: number) => void;
   pipeRenderStyle: PipeRenderStyle;
+  customColors: Record<string, string>;
   onVertexDragStart: () => void;
   onVertexDragEnd: () => void;
 }
@@ -1284,11 +1502,13 @@ function LineNode({
   onExtend,
   onSplit,
   pipeRenderStyle,
+  customColors,
   onVertexDragStart,
   onVertexDragEnd,
 }: LineNodeProps) {
   const sub = SUBCATEGORIES[line.subId];
   const duct = isDuctSub(line.subId);
+  const color = colorFor(sub, customColors);
   // Reell pikselbredde iht. valgt dimensjon + målestokk (samme koordinatrom som
   // PDF-bildet, så bredden skalerer naturlig med zoom). Minimumsbredde sikrer at
   // røret er synlig selv før målestokk er satt eller ved langt utzoomet visning.
@@ -1323,17 +1543,15 @@ function LineNode({
           listening={false}
         />
       )}
-      {duct ? (
-        // Kanaler tegnes alltid som ingeniørtegning (dobbel veggstrek + strek-prikk
-        // senterlinje) – dette er den faste, korrekte visningen for ventilasjon og
-        // styres ikke av rør-visningsvalget (som kun gjelder rør/væskesystemer).
-        <DuctSchematic points={line.points} diameterPx={diameterPx} color={sub.color} invScale={invScale} />
-      ) : pipeRenderStyle === 'cylinder' ? (
-        <PipeTube points={line.points} diameterPx={diameterPx} color={sub.color} />
+      {duct ? null /* Kanalveggene tegnes samlet for hele strekningen av DuctRunSchematic
+        ovenfor (se ductRuns), ikke her per segment – gir sammenhengende vegger uten
+        hakk ved bend/overganger. Denne noden bidrar likevel med usynlig hit-linje +
+        valg-glød under, uendret. */ : pipeRenderStyle === 'cylinder' ? (
+        <PipeTube points={line.points} diameterPx={diameterPx} color={color} />
       ) : (
         <Line
           points={line.points}
-          stroke={sub.color}
+          stroke={color}
           strokeWidth={3 * invScale}
           lineCap="round"
           lineJoin="round"
@@ -1343,7 +1561,7 @@ function LineNode({
       <Line
         ref={lineRef}
         points={line.points}
-        stroke={sub.color}
+        stroke={color}
         strokeWidth={1}
         hitStrokeWidth={Math.max(diameterPx, 16 * invScale)}
         opacity={0}
@@ -1561,19 +1779,26 @@ function BendMarker({
   selected: boolean;
   onSelect: () => void;
 }) {
+  // Bend-punktet vises nå som en jevn avrundet sving på selve kanalveggen (se
+  // DuctRunSchematic) – prikk+gradtall er derfor bare synlig ved valg, for å slippe
+  // unødvendig visuell støy på hvert eneste bend i en ferdig tegning.
   return (
     <Group x={bend.x} y={bend.y}>
-      {selected && <Circle radius={9 * invScale} stroke="#f5a623" strokeWidth={2 * invScale} listening={false} />}
-      <Circle radius={4 * invScale} fill="#f5a623" listening={false} />
-      <Text
-        text={`${bend.angleDeg}°`}
-        x={7 * invScale}
-        y={-16 * invScale}
-        fontSize={11.5 * invScale}
-        fill="#b8860b"
-        fontStyle="bold"
-        listening={false}
-      />
+      {selected && (
+        <>
+          <Circle radius={9 * invScale} stroke="#f5a623" strokeWidth={2 * invScale} listening={false} />
+          <Circle radius={4 * invScale} fill="#f5a623" listening={false} />
+          <Text
+            text={`${bend.angleDeg}°`}
+            x={7 * invScale}
+            y={-16 * invScale}
+            fontSize={11.5 * invScale}
+            fill="#b8860b"
+            fontStyle="bold"
+            listening={false}
+          />
+        </>
+      )}
       <Circle
         radius={12 * invScale}
         opacity={0}
@@ -1752,6 +1977,117 @@ function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange
           listening={false}
         />
       )}
+    </Group>
+  );
+}
+
+// ── Måling (punkt-til-punkt avstand / rom-areal) ────────────────────────────
+interface MeasurementNodeProps {
+  measurement: MeasurementEntity;
+  metersPerPixel: number | null;
+  selected: boolean;
+  invScale: number;
+  onSelect: () => void;
+}
+
+function MeasurementNode({ measurement, metersPerPixel, selected, invScale, onSelect }: MeasurementNodeProps) {
+  const color = selected ? '#f5a623' : '#7c4dff';
+  const isArea = measurement.type === 'area';
+  const label = isArea
+    ? formatAreaM2(polygonArea(measurement.points), metersPerPixel)
+    : formatLengthMm(polylineLength(measurement.points), metersPerPixel);
+  const labelPos = isArea
+    ? polygonCentroid(measurement.points)
+    : { x: (measurement.points[0] + measurement.points[2]) / 2, y: (measurement.points[1] + measurement.points[3]) / 2 };
+  const fontSize = 12 * invScale;
+  return (
+    <Group onMouseDown={(e) => { e.cancelBubble = true; onSelect(); }}>
+      <Line
+        points={measurement.points}
+        stroke={color}
+        strokeWidth={1.5 * invScale}
+        closed={isArea}
+        fill={isArea ? (selected ? 'rgba(245,166,35,0.12)' : 'rgba(124,77,255,0.1)') : undefined}
+        hitStrokeWidth={12 * invScale}
+      />
+      <Rect
+        x={labelPos.x - (label.length * fontSize * 0.3)}
+        y={labelPos.y - fontSize * 0.85}
+        width={label.length * fontSize * 0.6}
+        height={fontSize * 1.6}
+        fill="#fff"
+        stroke={color}
+        strokeWidth={1 * invScale}
+        cornerRadius={3 * invScale}
+        listening={false}
+      />
+      <Text
+        text={label}
+        x={labelPos.x - (label.length * fontSize * 0.3)}
+        y={labelPos.y - fontSize * 0.6}
+        width={label.length * fontSize * 0.6}
+        align="center"
+        fontSize={fontSize}
+        fill="#1f2933"
+        listening={false}
+      />
+    </Group>
+  );
+}
+
+// ── Tag (merkelapp med leaderlinje) ─────────────────────────────────────────
+interface TagNodeProps {
+  tag: TagEntity;
+  /** Ferdig utledet visningstekst (rørtype+dimensjon, eller kun dimensjon for kanaler) */
+  text: string;
+  /** Samme farge som underkategorien taggen er festet til, for visuell sammenheng */
+  color: string;
+  selected: boolean;
+  invScale: number;
+  editable: boolean;
+  onSelect: () => void;
+  onChange: (labelX: number, labelY: number) => void;
+}
+
+function TagNode({ tag, text, color, selected, invScale, editable, onSelect, onChange }: TagNodeProps) {
+  const padX = 6 * invScale;
+  const padY = 4 * invScale;
+  const fontSize = 12 * invScale;
+  const boxW = text.length * fontSize * 0.6 + padX * 2;
+  const boxH = fontSize + padY * 2;
+  return (
+    <Group>
+      {/* Leaderlinje fra ankerpunktet på røret/kanalen til tag-boksen */}
+      <Line
+        points={[tag.x, tag.y, tag.labelX, tag.labelY]}
+        stroke={selected ? '#f5a623' : color}
+        strokeWidth={1.2 * invScale}
+        listening={false}
+      />
+      <Circle x={tag.x} y={tag.y} radius={2.5 * invScale} fill={selected ? '#f5a623' : color} listening={false} />
+      <Group
+        x={tag.labelX}
+        y={tag.labelY}
+        offsetX={boxW / 2}
+        offsetY={boxH / 2}
+        draggable={editable}
+        onMouseDown={(e) => {
+          if (!editable) return;
+          e.cancelBubble = true;
+          onSelect();
+        }}
+        onDragEnd={(e) => onChange(e.target.x() + boxW / 2, e.target.y() + boxH / 2)}
+      >
+        <Rect
+          width={boxW}
+          height={boxH}
+          fill="#fff"
+          stroke={selected ? '#f5a623' : color}
+          strokeWidth={1.2 * invScale}
+          cornerRadius={3 * invScale}
+        />
+        <Text text={text} x={padX} y={padY} fontSize={fontSize} fill="#1f2933" />
+      </Group>
     </Group>
   );
 }
