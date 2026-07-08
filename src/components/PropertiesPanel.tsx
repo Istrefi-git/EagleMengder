@@ -1,0 +1,431 @@
+import { Trash2 } from 'lucide-react';
+import { useStore } from '../store';
+import { CATEGORIES, SUBCATEGORIES, SYMBOL_DEFS, branchFittingLabel, categoryOf, mergedDimensions } from '../types';
+import { polylineLength } from '../lib/geometry';
+import { formatLengthMm } from '../lib/scale';
+
+export function PropertiesPanel() {
+  const selectedId = useStore((s) => s.selectedId);
+  const selectedKind = useStore((s) => s.selectedKind);
+  const lines = useStore((s) => s.lines);
+  const symbols = useStore((s) => s.symbols);
+  const transitions = useStore((s) => s.transitions);
+  const branches = useStore((s) => s.branches);
+  const bends = useStore((s) => s.bends);
+  const annotations = useStore((s) => s.annotations);
+  const updateAnnotation = useStore((s) => s.updateAnnotation);
+  const scale = useStore((s) => s.scale);
+  const updateLineProps = useStore((s) => s.updateLineProps);
+  const updateSymbol = useStore((s) => s.updateSymbol);
+  const deleteSelected = useStore((s) => s.deleteSelected);
+  const multiSelection = useStore((s) => s.multiSelection);
+  const clearMultiSelection = useStore((s) => s.clearMultiSelection);
+  const deleteMany = useStore((s) => s.deleteMany);
+  const updateManyLineProps = useStore((s) => s.updateManyLineProps);
+  const customSystems = useStore((s) => s.customSystems);
+  const customDimensions = useStore((s) => s.customDimensions);
+
+  if (multiSelection.size > 0) {
+    const ids = Array.from(multiSelection);
+    const selectedLines = lines.filter((l) => ids.includes(l.id));
+    const totalPx = selectedLines.reduce((acc, l) => acc + polylineLength(l.points), 0);
+    const commonSubId = selectedLines.every((l) => l.subId === selectedLines[0]?.subId)
+      ? selectedLines[0]?.subId
+      : null;
+    const sub = commonSubId ? SUBCATEGORIES[commonSubId] : null;
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>{ids.length} valgt</h3>
+        </div>
+        <div className="field readonly">
+          <span>Samlet lengde</span>
+          <strong>{formatLengthMm(totalPx, scale.metersPerPixel)}</strong>
+        </div>
+        {sub && (
+          <>
+            <label className="field">
+              <span>Materiale / rørtype (alle)</span>
+              <select
+                value=""
+                onChange={(e) =>
+                  e.target.value && updateManyLineProps(ids, { material: e.target.value })
+                }
+              >
+                <option value="" disabled>
+                  Velg…
+                </option>
+                {sub.materials.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Dimensjon (alle)</span>
+              <select
+                value=""
+                onChange={(e) =>
+                  e.target.value && updateManyLineProps(ids, { dimension: e.target.value })
+                }
+              >
+                <option value="" disabled>
+                  Velg…
+                </option>
+                {mergedDimensions(sub, customDimensions).map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        {!sub && (
+          <p className="muted">
+            Velg objekter i samme underkategori for å bytte materiale/dimensjon for alle samtidig.
+          </p>
+        )}
+        <button className="btn full" onClick={clearMultiSelection}>
+          Fjern utvalg
+        </button>
+        <button className="btn danger full" onClick={() => deleteMany(ids)}>
+          <Trash2 size={15} />
+          Slett alle ({ids.length})
+        </button>
+      </section>
+    );
+  }
+
+  if (!selectedId) {
+    return (
+      <section className="properties-panel empty">
+        <div className="panel-header">
+          <h3>Egenskaper</h3>
+        </div>
+        <p className="muted">Velg en linje eller et symbol for å redigere egenskaper.</p>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'line') {
+    const line = lines.find((l) => l.id === selectedId);
+    if (!line) return null;
+    const sub = SUBCATEGORIES[line.subId];
+    const cat = categoryOf(line.subId);
+    const lenPx = polylineLength(line.points);
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – linje</h3>
+          <span className="badge cat" style={{ borderColor: sub.color, color: sub.color }}>
+            {cat.code}
+          </span>
+        </div>
+        <label className="field">
+          <span>Kategori / system</span>
+          <select
+            value={line.subId}
+            onChange={(e) => updateLineProps(line.id, { subId: e.target.value })}
+          >
+            {CATEGORIES.map((c) => (
+              <optgroup key={c.code} label={`${c.code} ${c.label}`}>
+                {c.subs.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Materiale / rørtype</span>
+          <select
+            value={line.material}
+            onChange={(e) => updateLineProps(line.id, { material: e.target.value })}
+          >
+            {sub.materials.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Dimensjon</span>
+          <select
+            value={line.dimension}
+            onChange={(e) => updateLineProps(line.id, { dimension: e.target.value })}
+          >
+            {mergedDimensions(sub, customDimensions).map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </label>
+        {customSystems.length > 0 && (
+          <label className="field">
+            <span>System (valgfritt)</span>
+            <select
+              value={line.systemId ?? ''}
+              onChange={(e) => updateLineProps(line.id, { systemId: e.target.value || undefined })}
+            >
+              <option value="">Ingen</option>
+              {customSystems.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="field readonly">
+          <span>Lengde</span>
+          <strong>{formatLengthMm(lenPx, scale.metersPerPixel)}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Knekkpunkter</span>
+          <strong>{line.points.length / 2}</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett linje
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'transition') {
+    const t = transitions.find((tr) => tr.id === selectedId);
+    if (!t) return null;
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Overgang</h3>
+        </div>
+        <div className="field readonly">
+          <span>System</span>
+          <strong>{SUBCATEGORIES[t.subId]?.label ?? t.subId}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Materiale</span>
+          <strong>{t.material}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Dimensjon</span>
+          <strong>{t.fromDimension} → {t.toDimension}</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett overgang
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'branch') {
+    const b = branches.find((br) => br.id === selectedId);
+    if (!b) return null;
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Avgreining</h3>
+        </div>
+        <div className="field readonly">
+          <span>System</span>
+          <strong>{SUBCATEGORIES[b.subId]?.label ?? b.subId}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Type</span>
+          <strong>{branchFittingLabel(b.fittingType)}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Materiale</span>
+          <strong>{b.material}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Dimensjon</span>
+          <strong>{b.dimension} → {b.branchDimension}</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett avgreining
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'bend') {
+    const bend = bends.find((bd) => bd.id === selectedId);
+    if (!bend) return null;
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Bend</h3>
+        </div>
+        <div className="field readonly">
+          <span>System</span>
+          <strong>{SUBCATEGORIES[bend.subId]?.label ?? bend.subId}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Materiale</span>
+          <strong>{bend.material}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Dimensjon</span>
+          <strong>{bend.dimension}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Vinkel</span>
+          <strong>{bend.angleDeg}°</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett bend
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'annotation') {
+    const note = annotations.find((a) => a.id === selectedId);
+    if (!note) return null;
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – {note.type === 'text' ? 'Tekst' : 'Sky'}</h3>
+        </div>
+        {note.type === 'text' && (
+          <label className="field">
+            <span>Tekst</span>
+            <textarea
+              value={note.text ?? ''}
+              onChange={(e) => updateAnnotation(note.id, { text: e.target.value })}
+              rows={3}
+            />
+          </label>
+        )}
+        <label className="field">
+          <span>Farge</span>
+          <input
+            type="color"
+            value={note.color}
+            onChange={(e) => updateAnnotation(note.id, { color: e.target.value })}
+          />
+        </label>
+        {note.type === 'text' ? (
+          <label className="field">
+            <span>Skriftstørrelse</span>
+            <input
+              type="number"
+              min={8}
+              max={48}
+              value={note.fontSize ?? 14}
+              onChange={(e) => updateAnnotation(note.id, { fontSize: Number(e.target.value) })}
+            />
+          </label>
+        ) : (
+          <label className="field">
+            <span>Tykkelse</span>
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={note.strokeWidth ?? 2}
+              onChange={(e) => updateAnnotation(note.id, { strokeWidth: Number(e.target.value) })}
+            />
+          </label>
+        )}
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett {note.type === 'text' ? 'tekst' : 'sky'}
+        </button>
+      </section>
+    );
+  }
+
+  // symbol
+  const sym = symbols.find((s) => s.id === selectedId);
+  if (!sym) return null;
+  const def = SYMBOL_DEFS[sym.type];
+  return (
+    <section className="properties-panel">
+      <div className="panel-header">
+        <h3>Egenskaper – {def.label}</h3>
+      </div>
+      {sym.mountedLineId && (
+        <div className="field readonly">
+          <span>Montert i</span>
+          <strong>Rør/kanal</strong>
+        </div>
+      )}
+      {def.fields.map((f) => (
+        <label key={f.key} className="field">
+          <span>
+            {f.label}
+            {f.unit ? ` (${f.unit})` : ''}
+          </span>
+          {f.kind === 'select' ? (
+            <select
+              value={String(sym.props[f.key] ?? f.default)}
+              onChange={(e) => updateSymbol(sym.id, { props: { [f.key]: e.target.value } })}
+            >
+              {f.options?.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          ) : f.kind === 'number' ? (
+            <input
+              type="number"
+              value={Number(sym.props[f.key] ?? f.default)}
+              onChange={(e) => updateSymbol(sym.id, { props: { [f.key]: Number(e.target.value) } })}
+            />
+          ) : (
+            <input
+              type="text"
+              value={String(sym.props[f.key] ?? f.default)}
+              onChange={(e) => updateSymbol(sym.id, { props: { [f.key]: e.target.value } })}
+            />
+          )}
+        </label>
+      ))}
+      <label className="field">
+        <span>Rotasjon</span>
+        <input
+          type="range"
+          min={0}
+          max={360}
+          step={15}
+          value={sym.rotation}
+          onChange={(e) => updateSymbol(sym.id, { rotation: Number(e.target.value) })}
+        />
+        <em className="range-value">{sym.rotation}°</em>
+      </label>
+      {customSystems.length > 0 && (
+        <label className="field">
+          <span>System (valgfritt)</span>
+          <select
+            value={sym.systemId ?? ''}
+            onChange={(e) => updateSymbol(sym.id, { systemId: e.target.value || undefined })}
+          >
+            <option value="">Ingen</option>
+            {customSystems.map((code) => (
+              <option key={code} value={code}>
+                {code}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <button className="btn danger full" onClick={deleteSelected}>
+        <Trash2 size={15} />
+        Slett symbol
+      </button>
+    </section>
+  );
+}

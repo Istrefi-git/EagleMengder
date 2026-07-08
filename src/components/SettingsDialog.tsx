@@ -1,0 +1,128 @@
+import { useState } from 'react';
+import { Trash2, X } from 'lucide-react';
+import { useStore } from '../store';
+import { DUCT_LENGTH_OPTIONS_MM, PIPE_LENGTH_OPTIONS_MM } from '../types';
+
+export function SettingsDialog() {
+  const open = useStore((s) => s.settingsDialogOpen);
+  const standardLengths = useStore((s) => s.standardLengths);
+  const setStandardLength = useStore((s) => s.setStandardLength);
+  const showAirflowArrows = useStore((s) => s.showAirflowArrows);
+  const setShowAirflowArrows = useStore((s) => s.setShowAirflowArrows);
+  const customSystems = useStore((s) => s.customSystems);
+  const addCustomSystem = useStore((s) => s.addCustomSystem);
+  const removeCustomSystem = useStore((s) => s.removeCustomSystem);
+  const close = useStore((s) => s.closeSettingsDialog);
+
+  const [newSystem, setNewSystem] = useState('');
+
+  if (!open) return null;
+
+  function submitNewSystem() {
+    if (!newSystem.trim()) return;
+    addCustomSystem(newSystem);
+    setNewSystem('');
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={close}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Innstillinger</h2>
+          <button className="btn icon" onClick={close}>
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="modal-body">
+          <div className="tab-pane">
+            <p className="note">
+              Standard leveringslengde brukes til å beregne antall nippel/muffe som
+              automatisk legges til i mengdelisten når et tegnet rør/kanal er lengre
+              enn standardlengden.
+            </p>
+
+            <div className="field">
+              <span>Kanal (Nippel)</span>
+              <div className="radio-row">
+                {DUCT_LENGTH_OPTIONS_MM.map((mm) => (
+                  <label key={mm} className={`radio-chip ${standardLengths.duct === mm ? 'active' : ''}`}>
+                    <input
+                      type="radio"
+                      name="duct-length"
+                      checked={standardLengths.duct === mm}
+                      onChange={() => setStandardLength('duct', mm)}
+                    />
+                    {mm} mm
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="field">
+              <span>Rør (Muffe)</span>
+              <div className="radio-row">
+                {PIPE_LENGTH_OPTIONS_MM.map((mm) => (
+                  <label key={mm} className={`radio-chip ${standardLengths.pipe === mm ? 'active' : ''}`}>
+                    <input
+                      type="radio"
+                      name="pipe-length"
+                      checked={standardLengths.pipe === mm}
+                      onChange={() => setStandardLength('pipe', mm)}
+                    />
+                    {mm} mm
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <label className="field row">
+              <input
+                type="checkbox"
+                checked={showAirflowArrows}
+                onChange={(e) => setShowAirflowArrows(e.target.checked)}
+              />
+              <span>Vis luftretningspiler på tilluft-/avtrekksventiler</span>
+            </label>
+
+            <div className="field">
+              <span>Systemer</span>
+              <p className="note">
+                Definer egne systemkoder (f.eks. «360.001») som kan velges når du tegner
+                et rør/kanal eller plasserer utstyr.
+              </p>
+              <div className="field row">
+                <input
+                  type="text"
+                  value={newSystem}
+                  onChange={(e) => setNewSystem(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitNewSystem()}
+                  placeholder="f.eks. 360.001"
+                />
+                <button className="btn" onClick={submitNewSystem}>
+                  Legg til
+                </button>
+              </div>
+              {customSystems.length > 0 && (
+                <div className="system-list">
+                  {customSystems.map((code) => (
+                    <div key={code} className="system-list-item">
+                      <span>{code}</span>
+                      <button
+                        className="btn icon"
+                        onClick={() => removeCustomSystem(code)}
+                        title="Fjern system"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
