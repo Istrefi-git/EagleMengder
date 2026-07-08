@@ -169,6 +169,9 @@ export function PdfCanvas() {
     y: number;
     kind: 'continue' | 'branch' | 'mount';
   } | null>(null);
+  // Snap-indikator for måleverktøyene (avstand/areal) – hvilken type punkt musepekeren
+  // akkurat nå er snappet til, kun til visning (selve punktet som brukes er `cursor`).
+  const [measureSnapKind, setMeasureSnapKind] = useState<'endpoint' | 'online' | 'symbol' | 'close' | null>(null);
 
   const invScale = 1 / view.scale;
   const isLineTool = tool.startsWith('line:');
@@ -304,6 +307,7 @@ export function PdfCanvas() {
     setCloudDraft(null);
     setEditingAnnotationId(null);
     setMeasureDraftPoints([]);
+    setMeasureSnapKind(null);
     if (tool.startsWith('line:')) {
       const subId = tool.slice('line:'.length);
       setDraftDimension(lineConfig[subId]?.dimension ?? null);
@@ -410,6 +414,47 @@ export function PdfCanvas() {
     if (distance(x, y, line.points[n - 2], line.points[n - 1]) <= tol) return 'end';
     return null;
   }
+
+  /** Snapper et målepunkt (avstand/areal-verktøy) til det mest relevante vektor-punktet i
+   * nærheten – slik man er vant til fra PDF-redigeringsverktøy. Selve PDF-bakgrunnen er et
+   * rasterbilde uten geometri vi kan lese ut, så snappingen bruker det vi faktisk HAR
+   * vektordata for: endepunkter/nærmeste punkt på tegnede rør og kanaler, plasserte
+   * utstyrspunkter, og – for arealverktøyet – tilbake til målingens eget startpunkt for å
+   * lukke romfiguren presist. Prioritert i den rekkefølgen (hjørner/punkter foran «et sted
+   * langs streken»), og returnerer nærmeste treff innenfor toleransen, eller null. */
+  const findMeasureSnapPoint = useCallback(
+    (point: { x: number; y: number }): { x: number; y: number; kind: 'endpoint' | 'online' | 'symbol' | 'close' } | null => {
+      const tol = 10 * invScale;
+      let best: { x: number; y: number; kind: 'endpoint' | 'online' | 'symbol' | 'close'; distance: number } | null = null;
+      const consider = (x: number, y: number, kind: 'endpoint' | 'online' | 'symbol' | 'close') => {
+        const d = distance(point.x, point.y, x, y);
+        if (d <= tol && (!best || d < best.distance)) best = { x, y, kind, distance: d };
+      };
+
+      if (measureType === 'area' && measureDraftPoints.length >= 4) {
+        consider(measureDraftPoints[0], measureDraftPoints[1], 'close');
+      }
+      for (const line of lines) {
+        if (line.page !== currentPage) continue;
+        const n = line.points.length;
+        consider(line.points[0], line.points[1], 'endpoint');
+        consider(line.points[n - 2], line.points[n - 1], 'endpoint');
+      }
+      for (const sym of symbols) {
+        if (sym.page !== currentPage) continue;
+        consider(sym.x, sym.y, 'symbol');
+      }
+      if (!best) {
+        for (const line of lines) {
+          if (line.page !== currentPage) continue;
+          const cp = closestPointOnPolyline(line.points, point);
+          if (cp) consider(cp.x, cp.y, 'online');
+        }
+      }
+      return best;
+    },
+    [lines, symbols, currentPage, invScale, measureType, measureDraftPoints],
+  );
 
   const finishLine = useCallback(() => {
     if (!isLineTool || !activeSubId) return;
@@ -613,7 +658,15 @@ export function PdfCanvas() {
         return;
       }
       if (isMeasureTool && measureType) {
-        const next = [...measureDraftPoints, p.x, p.y];
+        const snapped = findMeasureSnapPoint(p) ?? p;
+        // Lukk arealet hvis man klikker tilbake på startpunktet (samme snap-logikk som
+        // ved hovring), i stedet for å legge til et (nesten) duplikat punkt.
+        if (measureType === 'area' && snapped.x === measureDraftPoints[0] && snapped.y === measureDraftPoints[1] && measureDraftPoints.length >= 6) {
+          addMeasurement('area', measureDraftPoints);
+          setMeasureDraftPoints([]);
+          return;
+        }
+        const next = [...measureDraftPoints, snapped.x, snapped.y];
         if (measureType === 'distance' && next.length >= 4) {
           addMeasurement('distance', next);
           setMeasureDraftPoints([]);
@@ -669,6 +722,7 @@ export function PdfCanvas() {
       measureType,
       measureDraftPoints,
       addMeasurement,
+      findMeasureSnapPoint,
     ],
   );
 
@@ -690,7 +744,11 @@ export function PdfCanvas() {
       }
       const p = getImagePoint();
       if (!p) return;
-      if (isLineTool || tool === 'calibrate' || isMeasureTool) {
+      if (isMeasureTool) {
+        const snap = findMeasureSnapPoint(p);
+        setCursor(snap ?? p);
+        setMeasureSnapKind(snap?.kind ?? null);
+      } else if (isLineTool || tool === 'calibrate') {
         setCursor(isLineTool ? computeLinePoint(p, e.evt.shiftKey) : p);
       }
 
@@ -739,6 +797,7 @@ export function PdfCanvas() {
       draftPoints,
       activeSubId,
       findBranchTarget,
+      findMeasureSnapPoint,
       scale.metersPerPixel,
       invScale,
       lines,
@@ -1311,6 +1370,33 @@ export function PdfCanvas() {
               closed
               fill="rgba(124,77,255,0.08)"
             />
+          )}
+          {isMeasureTool && measureSnapKind && cursor && (
+            <Group x={cursor.x} y={cursor.y}>
+              <Circle
+                radius={7 * invScale}
+                stroke={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'}
+                strokeWidth={1.5 * invScale}
+                fill="#fff"
+              />
+              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'} />
+              <Text
+                text={
+                  measureSnapKind === 'endpoint'
+                    ? 'Endepunkt'
+                    : measureSnapKind === 'online'
+                      ? 'På linje'
+                      : measureSnapKind === 'symbol'
+                        ? 'Utstyr'
+                        : 'Lukk figur'
+                }
+                x={10 * invScale}
+                y={-16 * invScale}
+                fontSize={11 * invScale}
+                fill={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'}
+                fontStyle="bold"
+              />
+            </Group>
           )}
           {rubberBand && (
             <Rect
