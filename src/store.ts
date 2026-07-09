@@ -431,6 +431,8 @@ interface AppState {
   resolvePendingBranchChoice: (fittingType: BranchFittingType) => void;
   addTag: (lineId: string, x: number, y: number) => void;
   updateTagLabel: (id: string, labelX: number, labelY: number) => void;
+  /** Flytter valgt tag-etikett med (dx,dy) via piltastene. */
+  nudgeTag: (id: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
   addMeasurement: (type: MeasurementType, points: number[]) => void;
   /** Flytter valgt(e) linje(r) med (dx,dy) – flytter automatisk med hele den
    * sammenhengende rør-/kanalstrekningen (delte endepunkter), samt tilhørende
@@ -957,6 +959,13 @@ export const useStore = create<AppState>((set, get) => {
   updateTagLabel: (id, labelX, labelY) => {
     recordHistory();
     set((s) => ({ tags: s.tags.map((t) => (t.id === id ? { ...t, labelX, labelY } : t)) }));
+  },
+
+  nudgeTag: (id, dx, dy, recordAsNewStep) => {
+    if (recordAsNewStep) recordHistory();
+    set((s) => ({
+      tags: s.tags.map((t) => (t.id === id ? { ...t, labelX: t.labelX + dx, labelY: t.labelY + dy } : t)),
+    }));
   },
 
   addMeasurement: (type, points) => {

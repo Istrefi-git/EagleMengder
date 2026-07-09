@@ -85,6 +85,7 @@ export function PdfCanvas() {
   const selectedId = useStore((s) => s.selectedId);
   const selectedKind = useStore((s) => s.selectedKind);
   const nudgeSelected = useStore((s) => s.nudgeSelected);
+  const nudgeTag = useStore((s) => s.nudgeTag);
   const lineConfig = useStore((s) => s.lineConfig);
   const hoveredSymbolId = useStore((s) => s.hoveredSymbolId);
   const pipeRenderStyle = useStore((s) => s.pipeRenderStyle);
@@ -281,6 +282,18 @@ export function PdfCanvas() {
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
         nudgeSelected(dx, dy, !e.repeat);
+      } else if (
+        tool === 'select' &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        selectedKind === 'tag' &&
+        selectedId
+      ) {
+        // Flytter valgt tag-etikett ett skjermpiksel av gangen (Shift for et større hopp).
+        e.preventDefault();
+        const step = (e.shiftKey ? 10 : 1) * invScale;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        nudgeTag(selectedId, dx, dy, !e.repeat);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -292,8 +305,10 @@ export function PdfCanvas() {
     multiSelection,
     tool,
     selectedKind,
+    selectedId,
     invScale,
     nudgeSelected,
+    nudgeTag,
     measureType,
     measureDraftPoints,
     addMeasurement,
