@@ -30,7 +30,7 @@ export default function Register() {
             <span className="site-logo-mark">
               <Ruler size={15} />
             </span>
-            Mengdemåler
+            IstrefiCAD
           </Link>
           <h1 className="site-auth-title">Opprett konto</h1>
           <p className="site-auth-sub">Gratis å starte – ingen kredittkort nødvendig.</p>

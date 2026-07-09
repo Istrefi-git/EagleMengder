@@ -191,7 +191,7 @@ export default function Landing() {
 
       <footer className="site-footer">
         <div className="site-footer-inner">
-          <span>© {new Date().getFullYear()} Mengdemåler</span>
+          <span>© {new Date().getFullYear()} IstrefiCAD</span>
           <span>Laget for VVS- og ventilasjonsbransjen</span>
         </div>
       </footer>

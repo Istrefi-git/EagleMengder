@@ -30,7 +30,7 @@ export default function Login() {
             <span className="site-logo-mark">
               <Ruler size={15} />
             </span>
-            Mengdemåler
+            IstrefiCAD
           </Link>
           <h1 className="site-auth-title">Logg inn</h1>
           <p className="site-auth-sub">Fortsett til dine prosjekter og tilbud.</p>

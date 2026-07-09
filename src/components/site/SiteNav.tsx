@@ -13,7 +13,7 @@ export function SiteNav() {
           <span className="site-logo-mark">
             <Ruler size={15} />
           </span>
-          Mengdemåler
+          IstrefiCAD
         </Link>
 
         {!user && (

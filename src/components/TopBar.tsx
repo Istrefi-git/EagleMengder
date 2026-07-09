@@ -98,7 +98,7 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
           <Ruler size={15} />
         </span>
         <div className="brand-text">
-          <strong>Mengdemåler</strong>
+          <strong>IstrefiCAD</strong>
           <span>VVS &amp; Ventilasjon</span>
         </div>
       </div>
