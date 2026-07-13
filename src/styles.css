@@ -1000,6 +1000,28 @@ body {
   padding: 5px 8px;
   font-size: 12px;
 }
+.draw-hud-toggle {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease-out),
+    color 0.15s var(--ease-out);
+}
+.draw-hud-toggle:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.draw-hud-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .annotation-hud-color input[type='color'] {
   width: 26px;
   height: 26px;

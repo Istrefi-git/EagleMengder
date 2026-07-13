@@ -442,13 +442,13 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
     type: 'supply_diffuser',
     label: 'Tilluftventil',
     kind: 'duct',
-    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' }],
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '600x600' }],
   },
   extract_diffuser: {
     type: 'extract_diffuser',
     label: 'Avtrekksventil',
     kind: 'duct',
-    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' }],
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '600x600' }],
   },
   fan: {
     type: 'fan',

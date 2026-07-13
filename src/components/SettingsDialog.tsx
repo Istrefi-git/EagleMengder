@@ -9,6 +9,8 @@ export function SettingsDialog() {
   const setStandardLength = useStore((s) => s.setStandardLength);
   const showAirflowArrows = useStore((s) => s.showAirflowArrows);
   const setShowAirflowArrows = useStore((s) => s.setShowAirflowArrows);
+  const hideComponentLabels = useStore((s) => s.hideComponentLabels);
+  const setHideComponentLabels = useStore((s) => s.setHideComponentLabels);
   const customSystems = useStore((s) => s.customSystems);
   const addCustomSystem = useStore((s) => s.addCustomSystem);
   const removeCustomSystem = useStore((s) => s.removeCustomSystem);
@@ -83,6 +85,15 @@ export function SettingsDialog() {
                 onChange={(e) => setShowAirflowArrows(e.target.checked)}
               />
               <span>Vis luftretningspiler på tilluft-/avtrekksventiler</span>
+            </label>
+
+            <label className="field row">
+              <input
+                type="checkbox"
+                checked={hideComponentLabels}
+                onChange={(e) => setHideComponentLabels(e.target.checked)}
+              />
+              <span>Skjul komponenttekst (overganger, avgreininger)</span>
             </label>
 
             <div className="field">

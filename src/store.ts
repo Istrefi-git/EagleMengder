@@ -111,6 +111,8 @@ interface PersistedSettings {
   pipeRenderStyle: PipeRenderStyle;
   theme: Theme;
   showAirflowArrows: boolean;
+  /** Skjul tekst-etiketter for komponenter (overganger/avgreininger) på lerretet. */
+  hideComponentLabels: boolean;
   suppressOffLineWarning: boolean;
   customSystems: string[];
   /** Egendefinerte dimensjoner lagt til per underkategori (f.eks. runde Ø-mål eller
@@ -135,6 +137,8 @@ function loadSettings(): PersistedSettings {
           : DEFAULT_PIPE_RENDER_STYLE,
       theme: parsed.theme === 'dark' ? 'dark' : DEFAULT_THEME,
       showAirflowArrows: typeof parsed.showAirflowArrows === 'boolean' ? parsed.showAirflowArrows : true,
+      hideComponentLabels:
+        typeof parsed.hideComponentLabels === 'boolean' ? parsed.hideComponentLabels : false,
       suppressOffLineWarning:
         typeof parsed.suppressOffLineWarning === 'boolean' ? parsed.suppressOffLineWarning : false,
       customSystems: Array.isArray(parsed.customSystems)
@@ -169,6 +173,7 @@ function defaultSettings(): PersistedSettings {
     pipeRenderStyle: DEFAULT_PIPE_RENDER_STYLE,
     theme: DEFAULT_THEME,
     showAirflowArrows: true,
+    hideComponentLabels: false,
     suppressOffLineWarning: false,
     customSystems: [],
     customDimensions: {},
@@ -193,6 +198,7 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     pipeRenderStyle: s.pipeRenderStyle,
     theme: s.theme,
     showAirflowArrows: s.showAirflowArrows,
+    hideComponentLabels: s.hideComponentLabels,
     suppressOffLineWarning: s.suppressOffLineWarning,
     customSystems: s.customSystems,
     customDimensions: s.customDimensions,
@@ -268,6 +274,10 @@ interface AppState {
   theme: Theme;
   /** Vis luftrettings-piler på tilluft-/avtrekksventiler */
   showAirflowArrows: boolean;
+  /** Skjul tekst-etiketter for komponenter (overganger/avgreininger) på lerretet */
+  hideComponentLabels: boolean;
+  /** Modus for arealmåling: fri polygon eller rektangel (klikk-og-dra) */
+  areaMeasureMode: 'free' | 'rect';
   /** Egendefinerte systemkoder (f.eks. «360.001») som kan velges på rør/kanaler/utstyr */
   customSystems: string[];
   /** Egendefinerte dimensjoner lagt til per underkategori (runde eller rektangulære kanalmål osv.) */
@@ -389,6 +399,8 @@ interface AppState {
   confirmPendingOffLineSymbol: (suppressFuture: boolean) => void;
   cancelPendingOffLineSymbol: () => void;
   setShowAirflowArrows: (show: boolean) => void;
+  setHideComponentLabels: (hide: boolean) => void;
+  setAreaMeasureMode: (mode: 'free' | 'rect') => void;
   addCustomSystem: (code: string) => void;
   removeCustomSystem: (code: string) => void;
   addCustomDimension: (subId: string, dimension: string) => void;
@@ -439,6 +451,11 @@ interface AppState {
    * bend-/overgangs-/avgreiningsmarkører, tagger og montert utstyr, slik at
    * alt fortsatt henger sammen visuelt etter flyttingen. */
   nudgeSelected: (dx: number, dy: number, recordAsNewStep: boolean) => void;
+  /** Flytter KUN én linje med (dx,dy). Tilkoblede naboer strekkes (kun det delte
+   * endepunktet følger med, den andre enden står stille), og skjøt-markører,
+   * monterte symboler og tagger på den flyttede linjen følger med – slik at kun
+   * den valgte kanalen flyttes mens resten fortsatt henger sammen. */
+  moveSingleLine: (lineId: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
 
   setStandardLength: (kind: 'pipe' | 'duct', mm: number) => void;
   setPipeRenderStyle: (style: PipeRenderStyle) => void;
@@ -565,6 +582,8 @@ export const useStore = create<AppState>((set, get) => {
   pipeRenderStyle: initialSettings.pipeRenderStyle,
   theme: initialSettings.theme,
   showAirflowArrows: initialSettings.showAirflowArrows,
+  hideComponentLabels: initialSettings.hideComponentLabels,
+  areaMeasureMode: 'free',
   customSystems: initialSettings.customSystems,
   customDimensions: initialSettings.customDimensions,
   customColors: initialSettings.customColors,
@@ -811,6 +830,14 @@ export const useStore = create<AppState>((set, get) => {
       persistSettings(s, { showAirflowArrows: show });
       return { showAirflowArrows: show };
     }),
+
+  setHideComponentLabels: (hide) =>
+    set((s) => {
+      persistSettings(s, { hideComponentLabels: hide });
+      return { hideComponentLabels: hide };
+    }),
+
+  setAreaMeasureMode: (mode) => set({ areaMeasureMode: mode }),
 
   addCustomSystem: (code) =>
     set((s) => {
@@ -1210,6 +1237,56 @@ export const useStore = create<AppState>((set, get) => {
       ),
       symbols: st.symbols.map((sy) =>
         sy.mountedLineId && movingIds.has(sy.mountedLineId) ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
+      ),
+    }));
+  },
+
+  moveSingleLine: (lineId, dx, dy, recordAsNewStep) => {
+    const s = get();
+    const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
+    if (!line) return;
+    if (recordAsNewStep) recordHistory();
+
+    // De to (gamle) endepunktene til linjen som flyttes. Naboer som deler et av disse
+    // punktene skal strekkes: kun det delte endepunktet følger med, den andre enden står.
+    const n = line.points.length;
+    const oldEndpoints = [
+      { x: line.points[0], y: line.points[1] },
+      { x: line.points[n - 2], y: line.points[n - 1] },
+    ];
+    const eps = 0.5;
+    const atOldEndpoint = (x: number, y: number) =>
+      oldEndpoints.some((p) => Math.abs(p.x - x) < eps && Math.abs(p.y - y) < eps);
+
+    set((st) => ({
+      lines: st.lines.map((l) => {
+        if (l.id === lineId) {
+          // Selve den valgte linjen flyttes rigid.
+          return { ...l, points: l.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) };
+        }
+        if (l.page !== line.page) return l;
+        // Naboer: flytt kun de vertex-ene som sammenfaller med et gammelt endepunkt.
+        let changed = false;
+        const next = [...l.points];
+        for (let i = 0; i + 1 < next.length; i += 2) {
+          if (atOldEndpoint(next[i], next[i + 1])) {
+            next[i] += dx;
+            next[i + 1] += dy;
+            changed = true;
+          }
+        }
+        return changed ? { ...l, points: next } : l;
+      }),
+      // Skjøt-markører som satt på de flyttede endepunktene følger med.
+      bends: st.bends.map((b) => (atOldEndpoint(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+      transitions: st.transitions.map((t) => (atOldEndpoint(t.x, t.y) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
+      branches: st.branches.map((b) => (atOldEndpoint(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+      // Tagger og montert utstyr på den flyttede linjen følger med.
+      tags: st.tags.map((t) =>
+        t.lineId === lineId ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy } : t,
+      ),
+      symbols: st.symbols.map((sy) =>
+        sy.mountedLineId === lineId ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
       ),
     }));
   },

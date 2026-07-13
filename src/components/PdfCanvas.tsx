@@ -85,6 +85,7 @@ export function PdfCanvas() {
   const selectedId = useStore((s) => s.selectedId);
   const selectedKind = useStore((s) => s.selectedKind);
   const nudgeSelected = useStore((s) => s.nudgeSelected);
+  const moveSingleLine = useStore((s) => s.moveSingleLine);
   const nudgeTag = useStore((s) => s.nudgeTag);
   const lineConfig = useStore((s) => s.lineConfig);
   const hoveredSymbolId = useStore((s) => s.hoveredSymbolId);
@@ -107,6 +108,9 @@ export function PdfCanvas() {
   const updateTagLabel = useStore((s) => s.updateTagLabel);
   const measurements = useStore((s) => s.measurements);
   const addMeasurement = useStore((s) => s.addMeasurement);
+  const areaMeasureMode = useStore((s) => s.areaMeasureMode);
+  const setAreaMeasureMode = useStore((s) => s.setAreaMeasureMode);
+  const hideComponentLabels = useStore((s) => s.hideComponentLabels);
   const setPendingBranchChoice = useStore((s) => s.setPendingBranchChoice);
   const updateLineConfigDimension = useStore((s) => s.updateLineConfigDimension);
   const setLineSelection = useStore((s) => s.setLineSelection);
@@ -173,6 +177,16 @@ export function PdfCanvas() {
   // Snap-indikator for måleverktøyene (avstand/areal) – hvilken type punkt musepekeren
   // akkurat nå er snappet til, kun til visning (selve punktet som brukes er `cursor`).
   const [measureSnapKind, setMeasureSnapKind] = useState<'endpoint' | 'online' | 'symbol' | 'close' | null>(null);
+  // Klikk+dra-definisjon av en rektangulær arealmåling (kun når arealmodus = 'rect')
+  const [rectDraft, setRectDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // Midlertidig panorering ved å holde inne Mellomrom (og dra med venstre knapp),
+  // uavhengig av aktivt verktøy – mister ikke pågående tegning/måling.
+  const [isSpacePan, setIsSpacePan] = useState(false);
+  const spacePanRef = useRef(false);
+  // Manuell panorering med midtre museknapp (musehjul-klikk + dra).
+  const middlePanRef = useRef<{ startX: number; startY: number; viewX: number; viewY: number } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   const invScale = 1 / view.scale;
   const isLineTool = tool.startsWith('line:');
@@ -275,13 +289,18 @@ export function PdfCanvas() {
         (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
         (selectedKind === 'line' || multiSelection.size > 0)
       ) {
-        // Flytter valgt(e) kanal/rør ett skjermpiksel av gangen (Shift for et større hopp) –
-        // nudgeSelected tar seg av å holde sammenhengende strekninger tilkoblet.
+        // Flytter valgt(e) kanal/rør ett skjermpiksel av gangen (Shift for et større hopp).
         e.preventDefault();
         const step = (e.shiftKey ? 10 : 1) * invScale;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        nudgeSelected(dx, dy, !e.repeat);
+        if (multiSelection.size === 0 && selectedKind === 'line' && selectedId) {
+          // Kun én kanal valgt: flytt kun den, og strekk tilkoblede naboer (moveSingleLine).
+          moveSingleLine(selectedId, dx, dy, !e.repeat);
+        } else {
+          // Flervalg: flytt hele den sammenhengende strekningen rigid (nudgeSelected).
+          nudgeSelected(dx, dy, !e.repeat);
+        }
       } else if (
         tool === 'select' &&
         (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
@@ -308,11 +327,64 @@ export function PdfCanvas() {
     selectedId,
     invScale,
     nudgeSelected,
+    moveSingleLine,
     nudgeTag,
     measureType,
     measureDraftPoints,
     addMeasurement,
   ]);
+
+  // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
+  // verktøy og uten å miste pågående tegning/måling. Ignorerer tastetrykk mens man
+  // skriver i et tekstfelt.
+  useEffect(() => {
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !isTypingTarget()) {
+        e.preventDefault();
+        spacePanRef.current = true;
+        setIsSpacePan(true);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spacePanRef.current = false;
+        setIsSpacePan(false);
+      }
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+    };
+  }, []);
+
+  // Manuell panorering med midtre museknapp: følg musen mens knappen holdes, og
+  // avslutt ved slipp. Startpunkt/utgangs-view lagres i middlePanRef ved mousedown.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const pan = middlePanRef.current;
+      if (!pan) return;
+      setView({
+        scale: viewRef.current.scale,
+        x: pan.viewX + (e.clientX - pan.startX),
+        y: pan.viewY + (e.clientY - pan.startY),
+      });
+    };
+    const onUp = () => {
+      middlePanRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [setView]);
 
   // Avbryt pågående tegning når verktøy byttes, og forbered ny tegnesesjon
   useEffect(() => {
@@ -320,6 +392,7 @@ export function PdfCanvas() {
     setCursor(null);
     setHoverSnap(null);
     setCloudDraft(null);
+    setRectDraft(null);
     setEditingAnnotationId(null);
     setMeasureDraftPoints([]);
     setMeasureSnapKind(null);
@@ -598,6 +671,21 @@ export function PdfCanvas() {
   // gi ustabile/doble klikk-registreringer ved tegning.
   const handleStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
+      // Midtre museknapp (musehjul-klikk) starter manuell panorering – uansett
+      // aktivt verktøy, uten å røre pågående tegning/måling.
+      if (e.evt.button === 1) {
+        e.evt.preventDefault();
+        middlePanRef.current = {
+          startX: e.evt.clientX,
+          startY: e.evt.clientY,
+          viewX: viewRef.current.x,
+          viewY: viewRef.current.y,
+        };
+        return;
+      }
+      // Mens Mellomrom holdes inne panorerer venstre-dra hele lerretet (Konva drar
+      // stagen fordi draggable er på) – ikke legg til punkter/velg noe da.
+      if (spacePanRef.current) return;
       // Bare reager på klikk i tomt område (selve stagen / bakgrunnen)
       const clickedEmpty = e.target === e.target.getStage();
       const p = getImagePoint();
@@ -673,7 +761,18 @@ export function PdfCanvas() {
         return;
       }
       if (isMeasureTool && measureType) {
-        const snapped = findMeasureSnapPoint(p) ?? p;
+        // Rektangulær arealmåling: klikk-og-dra definerer rektangelet (committes i mouseup).
+        if (measureType === 'area' && areaMeasureMode === 'rect') {
+          setRectDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+          return;
+        }
+        // Frihånds-areal / avstand: snap til nærmeste vektorpunkt, men hold Shift
+        // for å låse segmentet til en rett strek (0/45/90°) fra forrige punkt.
+        const hasPrev = measureDraftPoints.length >= 2;
+        const prevX = hasPrev ? measureDraftPoints[measureDraftPoints.length - 2] : 0;
+        const prevY = hasPrev ? measureDraftPoints[measureDraftPoints.length - 1] : 0;
+        const snapped =
+          e.evt.shiftKey && hasPrev ? snapFirstPoint({ x: prevX, y: prevY }, p) : (findMeasureSnapPoint(p) ?? p);
         // Lukk arealet hvis man klikker tilbake på startpunktet (samme snap-logikk som
         // ved hovring), i stedet for å legge til et (nesten) duplikat punkt.
         if (measureType === 'area' && snapped.x === measureDraftPoints[0] && snapped.y === measureDraftPoints[1] && measureDraftPoints.length >= 6) {
@@ -738,6 +837,7 @@ export function PdfCanvas() {
       measureDraftPoints,
       addMeasurement,
       findMeasureSnapPoint,
+      areaMeasureMode,
     ],
   );
 
@@ -753,6 +853,11 @@ export function PdfCanvas() {
         if (p) setCloudDraft((cd) => (cd ? { ...cd, x1: p.x, y1: p.y } : cd));
         return;
       }
+      if (rectDraft) {
+        const p = getImagePoint();
+        if (p) setRectDraft((rd) => (rd ? { ...rd, x1: p.x, y1: p.y } : rd));
+        return;
+      }
       if (!isLineTool && !isSymbolTool && tool !== 'calibrate' && !isMeasureTool) {
         setHoverSnap((h) => (h ? null : h));
         return;
@@ -760,9 +865,21 @@ export function PdfCanvas() {
       const p = getImagePoint();
       if (!p) return;
       if (isMeasureTool) {
-        const snap = findMeasureSnapPoint(p);
-        setCursor(snap ?? p);
-        setMeasureSnapKind(snap?.kind ?? null);
+        if (measureType === 'area' && areaMeasureMode === 'rect') {
+          // Rektangelmodus bruker klikk-og-dra; ingen punkt-snap-indikator.
+          setCursor(null);
+          setMeasureSnapKind(null);
+        } else if (e.evt.shiftKey && measureDraftPoints.length >= 2) {
+          // Shift låser forhåndsvisningen til en rett strek fra forrige punkt.
+          const prevX = measureDraftPoints[measureDraftPoints.length - 2];
+          const prevY = measureDraftPoints[measureDraftPoints.length - 1];
+          setCursor(snapFirstPoint({ x: prevX, y: prevY }, p));
+          setMeasureSnapKind(null);
+        } else {
+          const snap = findMeasureSnapPoint(p);
+          setCursor(snap ?? p);
+          setMeasureSnapKind(snap?.kind ?? null);
+        }
       } else if (isLineTool || tool === 'calibrate') {
         setCursor(isLineTool ? computeLinePoint(p, e.evt.shiftKey) : p);
       }
@@ -803,9 +920,13 @@ export function PdfCanvas() {
     [
       rubberBand,
       cloudDraft,
+      rectDraft,
       isLineTool,
       isSymbolTool,
       isMeasureTool,
+      measureType,
+      measureDraftPoints,
+      areaMeasureMode,
       tool,
       getImagePoint,
       computeLinePoint,
@@ -828,6 +949,18 @@ export function PdfCanvas() {
       const h = Math.abs(cloudDraft.y1 - cloudDraft.y0);
       setCloudDraft(null);
       if (w > 8 && h > 8) addAnnotation('cloud', x0, y0, { width: w, height: h });
+      return;
+    }
+    if (rectDraft) {
+      // Rektangulær arealmåling committes som et lukket 4-hjørne-polygon.
+      const x0 = Math.min(rectDraft.x0, rectDraft.x1);
+      const x1 = Math.max(rectDraft.x0, rectDraft.x1);
+      const y0 = Math.min(rectDraft.y0, rectDraft.y1);
+      const y1 = Math.max(rectDraft.y0, rectDraft.y1);
+      setRectDraft(null);
+      if (x1 - x0 > 4 && y1 - y0 > 4) {
+        addMeasurement('area', [x0, y0, x1, y0, x1, y1, x0, y1]);
+      }
       return;
     }
     if (!rubberBand) return;
@@ -907,7 +1040,9 @@ export function PdfCanvas() {
   }, [
     rubberBand,
     cloudDraft,
+    rectDraft,
     addAnnotation,
+    addMeasurement,
     lines,
     symbols,
     annotations,
@@ -959,11 +1094,12 @@ export function PdfCanvas() {
     [view, setView],
   );
 
-  const cursorStyle = isPan
-    ? 'grab'
-    : isLineTool || isSymbolTool || isAnnotationTool || tool === 'calibrate'
-      ? 'crosshair'
-      : 'default';
+  const cursorStyle =
+    isPan || isSpacePan
+      ? 'grab'
+      : isLineTool || isSymbolTool || isAnnotationTool || isMeasureTool || tool === 'calibrate'
+        ? 'crosshair'
+        : 'default';
 
   // Forhåndsvisning av pågående linje (med levende segment til peker)
   const draftPreview =
@@ -1060,6 +1196,35 @@ export function PdfCanvas() {
               ))}
             </select>
           )}
+        </div>
+      )}
+
+      {measureType === 'area' && (
+        <div className="draw-hud">
+          <span className="draw-hud-label">Areal</span>
+          <span className="draw-hud-sep">·</span>
+          <button
+            className={`draw-hud-toggle ${areaMeasureMode === 'free' ? 'active' : ''}`}
+            onClick={() => {
+              setAreaMeasureMode('free');
+              setRectDraft(null);
+              setMeasureDraftPoints([]);
+            }}
+            title="Tegn arealet fritt punkt for punkt"
+          >
+            Frihånd
+          </button>
+          <button
+            className={`draw-hud-toggle ${areaMeasureMode === 'rect' ? 'active' : ''}`}
+            onClick={() => {
+              setAreaMeasureMode('rect');
+              setRectDraft(null);
+              setMeasureDraftPoints([]);
+            }}
+            title="Dra opp et rektangel (klikk og dra)"
+          >
+            Rektangel
+          </button>
         </div>
       )}
 
@@ -1233,7 +1398,7 @@ export function PdfCanvas() {
         scaleY={view.scale}
         x={view.x}
         y={view.y}
-        draggable={isPan}
+        draggable={isPan || isSpacePan}
         onMouseDown={handleStageMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleStageMouseUp}
@@ -1279,6 +1444,7 @@ export function PdfCanvas() {
                 }}
                 onToggleMultiSelect={() => toggleMultiSelect(line.id)}
                 onChange={(pts) => updateLinePoints(line.id, pts)}
+                onMove={(dx, dy) => moveSingleLine(line.id, dx, dy, true)}
                 onExtend={(fromStart) => seedContinuation(line, fromStart)}
                 onSplit={(x, y) => splitLineAt(line.id, x, y)}
                 metersPerPixel={scale.metersPerPixel}
@@ -1308,6 +1474,7 @@ export function PdfCanvas() {
               transition={t}
               invScale={invScale}
               selected={t.id === selectedId || multiSelection.has(t.id)}
+              hideLabel={hideComponentLabels}
               onSelect={() => select(t.id, 'transition')}
             />
           ))}
@@ -1317,6 +1484,7 @@ export function PdfCanvas() {
               branch={b}
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
+              hideLabel={hideComponentLabels}
               onSelect={() => select(b.id, 'branch')}
             />
           ))}
@@ -1383,6 +1551,18 @@ export function PdfCanvas() {
               strokeWidth={1.5 * invScale}
               dash={[6 * invScale, 4 * invScale]}
               closed
+              fill="rgba(124,77,255,0.08)"
+            />
+          )}
+          {rectDraft && (
+            <Rect
+              x={Math.min(rectDraft.x0, rectDraft.x1)}
+              y={Math.min(rectDraft.y0, rectDraft.y1)}
+              width={Math.abs(rectDraft.x1 - rectDraft.x0)}
+              height={Math.abs(rectDraft.y1 - rectDraft.y0)}
+              stroke="#7c4dff"
+              strokeWidth={1.5 * invScale}
+              dash={[6 * invScale, 4 * invScale]}
               fill="rgba(124,77,255,0.08)"
             />
           )}
@@ -1580,6 +1760,10 @@ interface LineNodeProps {
   onSelect: () => void;
   onToggleMultiSelect: () => void;
   onChange: (points: number[]) => void;
+  /** Flytter hele linjen (kropp-dra) med (dx,dy) – strekker tilkoblede naboer og drar
+   * med skjøt-markører/monterte symboler, i motsetning til onChange som kun endrer
+   * denne linjens egne punkter (brukt av knekkpunkt-håndtakene). */
+  onMove: (dx: number, dy: number) => void;
   onExtend: (fromStart: boolean) => void;
   /** Splitter et rett segment i to ved et gitt punkt (klikk på midtpunkt-håndtaket) –
    * brukes til å manuelt legge til et knekkpunkt på et allerede tegnet strekk. */
@@ -1600,6 +1784,7 @@ function LineNode({
   onSelect,
   onToggleMultiSelect,
   onChange,
+  onMove,
   onExtend,
   onSplit,
   pipeRenderStyle,
@@ -1680,9 +1865,9 @@ function LineNode({
           const node = e.target;
           const dx = node.x();
           const dy = node.y();
-          const moved = line.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
           node.position({ x: 0, y: 0 });
-          onChange(moved);
+          // Flytt kun denne kanalen; naboer strekkes og komponenter følger med.
+          onMove(dx, dy);
         }}
       />
       {bends.map((b, i) => (
@@ -1783,11 +1968,13 @@ function TransitionMarker({
   transition,
   invScale,
   selected,
+  hideLabel,
   onSelect,
 }: {
   transition: { x: number; y: number; fromDimension: string; toDimension: string };
   invScale: number;
   selected: boolean;
+  hideLabel: boolean;
   onSelect: () => void;
 }) {
   const r = 7 * invScale;
@@ -1802,15 +1989,17 @@ function TransitionMarker({
         fill="rgba(155,89,182,0.18)"
         listening={false}
       />
-      <Text
-        text={`${transition.fromDimension}→${transition.toDimension}`}
-        x={r + 4 * invScale}
-        y={-7 * invScale}
-        fontSize={11 * invScale}
-        fill="#9b59b6"
-        fontStyle="bold"
-        listening={false}
-      />
+      {!hideLabel && (
+        <Text
+          text={`${transition.fromDimension}→${transition.toDimension}`}
+          x={r + 4 * invScale}
+          y={-7 * invScale}
+          fontSize={11 * invScale}
+          fill="#9b59b6"
+          fontStyle="bold"
+          listening={false}
+        />
+      )}
       <Circle
         radius={Math.max(r + 6 * invScale, 14 * invScale)}
         opacity={0}
@@ -1828,11 +2017,13 @@ function BranchMarker({
   branch,
   invScale,
   selected,
+  hideLabel,
   onSelect,
 }: {
   branch: BranchEntity;
   invScale: number;
   selected: boolean;
+  hideLabel: boolean;
   onSelect: () => void;
 }) {
   const color = SUBCATEGORIES[branch.subId]?.color ?? '#9b59b6';
@@ -1843,16 +2034,18 @@ function BranchMarker({
       <Group scaleX={invScale} scaleY={invScale} listening={false}>
         <BranchGlyph type={branch.fittingType} color={color} />
       </Group>
-      <Text
-        text={`${branchFittingLabel(branch.fittingType)} ${branch.dimension}→${branch.branchDimension}`}
-        x={r + 2 * invScale}
-        y={-6 * invScale}
-        rotation={-branch.angleDeg}
-        fontSize={10.5 * invScale}
-        fill={color}
-        fontStyle="bold"
-        listening={false}
-      />
+      {!hideLabel && (
+        <Text
+          text={`${branchFittingLabel(branch.fittingType)} ${branch.dimension}→${branch.branchDimension}`}
+          x={r + 2 * invScale}
+          y={-6 * invScale}
+          rotation={-branch.angleDeg}
+          fontSize={10.5 * invScale}
+          fill={color}
+          fontStyle="bold"
+          listening={false}
+        />
+      )}
       <Circle
         radius={Math.max(r + 6 * invScale, 14 * invScale)}
         opacity={0}
@@ -1928,6 +2121,12 @@ interface SymbolNodeProps {
  * skaleres slik at kroppen får omtrent samme bredde som kanalen/røret det
  * monteres på. */
 const SYMBOL_GLYPH_UNITS = 22;
+/** Ytre kvadrat-side for diffusor-glyph-en i lokale enheter (2·s = 2·r·1,1).
+ * Brukes for å skalere tilluft-/avtrekksventiler til nøyaktig fysisk størrelse. */
+const DIFFUSER_GLYPH_UNITS = SYMBOL_GLYPH_UNITS * 1.1;
+/** Fast fysisk størrelse (mm) for tilluft-/avtrekksventiler – uavhengig av
+ * kanaldimensjonen de er montert på. */
+const DIFFUSER_SIZE_MM = 600;
 /** Minste lesbare skjermstørrelse for et symbol (px), brukt som nedre grense ved
  * sterk utzooming eller svært tynne rør/kanaler. */
 const SYMBOL_MIN_SCREEN_PX = 12;
@@ -1944,6 +2143,16 @@ function symbolRenderScale(
   metersPerPixel: number | null,
   invScale: number,
 ): number {
+  // Tilluft-/avtrekksventiler har fast fysisk størrelse (600×600 mm), uavhengig
+  // av kanaldimensjonen de er montert på. Diffusor-glyph-ens ytre kvadrat
+  // (DIFFUSER_GLYPH_UNITS lokale enheter) skaleres til 600 mm i verdenspiksler.
+  if (sym.type === 'supply_diffuser' || sym.type === 'extract_diffuser') {
+    if (metersPerPixel) {
+      const sidePx = Math.max(mmToPx(DIFFUSER_SIZE_MM, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
+      return sidePx / DIFFUSER_GLYPH_UNITS;
+    }
+    return invScale;
+  }
   let dimMm: number | null = null;
   if (sym.mountedLineId) {
     const line = lines.find((l) => l.id === sym.mountedLineId);
