@@ -1,6 +1,6 @@
-import { ArrowRightLeft, CornerUpRight, GitFork, Link2, Maximize2, Minimize2 } from 'lucide-react';
+import { ArrowRightLeft, CornerUpRight, GitFork, Link2, Maximize2, Minimize2, Wrench } from 'lucide-react';
 import { useStore } from '../store';
-import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
+import { CATEGORIES, CLAMP_ROD_LABEL, CLAMP_ROD_LENGTH_MM, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
 import { buildQuantityReport, categoryTotalMm } from '../lib/quantityReport';
 import { formatMm } from '../lib/scale';
 
@@ -10,14 +10,17 @@ export function QuantityPanel() {
   const transitions = useStore((s) => s.transitions);
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
+  const clamps = useStore((s) => s.clamps);
   const customColors = useStore((s) => s.customColors);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
   const focusMode = useStore((s) => s.focusMode);
   const toggleFocusMode = useStore((s) => s.toggleFocusMode);
+  const setMultiSelection = useStore((s) => s.setMultiSelection);
+  const clearSelection = useStore((s) => s.clearSelection);
   const mpp = scale.metersPerPixel;
 
-  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends);
+  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
   const {
     subTotal,
     subCount,
@@ -30,13 +33,31 @@ export function QuantityPanel() {
     jointCounts,
     branchCounts,
     transitionCounts,
+    clampCounts,
+    totalClamps,
+    subLineIds,
+    subDetailIds,
+    symbolDetailIds,
+    bendIds,
+    jointIds,
+    branchIds,
+    transitionIds,
+    clampIds,
   } = report;
+
+  /** Uthever alt tegnet av samme type på lerretet (gjenbruker multiSelection, som
+   * PdfCanvas allerede tegner en oransje glød for), når man klikker en mengdelinje. */
+  const highlight = (ids: string[] | undefined) => {
+    if (!ids || ids.length === 0) return;
+    clearSelection();
+    setMultiSelection(ids);
+  };
 
   // Vis kun kategorier/underkategorier som faktisk har noe tegnet – mengdelisten
   // skal speile prosjektet, ikke fungere som en alltid-full katalog.
   const visibleCategories = CATEGORIES.filter((cat) => categoryTotalMm(report, cat.code) > 0);
   const hasAnyData = visibleCategories.length > 0;
-  const totalAutoCount = totalBends + totalJoints + branches.length + transitions.length;
+  const totalAutoCount = totalBends + totalJoints + branches.length + transitions.length + totalClamps;
 
   return (
     <section className="quantity-panel">
@@ -74,7 +95,11 @@ export function QuantityPanel() {
             const subColor = colorFor(sub, customColors);
             return (
               <div key={sub.id} className="qty-sub">
-                <div className="qty-row">
+                <div
+                  className="qty-row qty-clickable"
+                  title="Klikk for å utheve alt tegnet av denne typen"
+                  onClick={() => highlight(subLineIds[sub.id])}
+                >
                   <span className="qty-label">
                     <span
                       className="qty-swatch"
@@ -91,7 +116,12 @@ export function QuantityPanel() {
                 </div>
                 {detail &&
                   Object.entries(detail).map(([key, mm]) => (
-                    <div key={key} className="qty-detail">
+                    <div
+                      key={key}
+                      className="qty-detail qty-clickable"
+                      title="Klikk for å utheve alt tegnet av denne typen"
+                      onClick={() => highlight(subDetailIds[sub.id]?.[key])}
+                    >
                       <span>{key}</span>
                       <span className="qty-value">{formatMm(mm)}</span>
                     </div>
@@ -119,7 +149,12 @@ export function QuantityPanel() {
           </div>
           {totalBends > 0 &&
             Object.entries(bendCounts).map(([key, count]) => (
-              <div key={key} className="qty-detail bend">
+              <div
+                key={key}
+                className="qty-detail bend qty-clickable"
+                title="Klikk for å utheve alt tegnet av denne typen"
+                onClick={() => highlight(bendIds[key])}
+              >
                 <span>{key}</span>
                 <span className="qty-value">{count} stk</span>
               </div>
@@ -136,7 +171,12 @@ export function QuantityPanel() {
           </div>
           {totalJoints > 0 &&
             Object.entries(jointCounts).map(([key, count]) => (
-              <div key={key} className="qty-detail joint">
+              <div
+                key={key}
+                className="qty-detail joint qty-clickable"
+                title="Klikk for å utheve alt tegnet av denne typen"
+                onClick={() => highlight(jointIds[key])}
+              >
                 <span>{key}</span>
                 <span className="qty-value">{count} stk</span>
               </div>
@@ -153,7 +193,12 @@ export function QuantityPanel() {
           </div>
           {branches.length > 0 &&
             Object.entries(branchCounts).map(([key, count]) => (
-              <div key={key} className="qty-detail branch">
+              <div
+                key={key}
+                className="qty-detail branch qty-clickable"
+                title="Klikk for å utheve alt tegnet av denne typen"
+                onClick={() => highlight(branchIds[key])}
+              >
                 <span>{key}</span>
                 <span className="qty-value">{count} stk</span>
               </div>
@@ -170,11 +215,48 @@ export function QuantityPanel() {
           </div>
           {transitions.length > 0 &&
             Object.entries(transitionCounts).map(([key, count]) => (
-              <div key={key} className="qty-detail">
+              <div
+                key={key}
+                className="qty-detail qty-clickable"
+                title="Klikk for å utheve alt tegnet av denne typen"
+                onClick={() => highlight(transitionIds[key])}
+              >
                 <span>{key}</span>
                 <span className="qty-value">{count} stk</span>
               </div>
             ))}
+          {totalClamps > 0 && (
+            <>
+              <div
+                className="qty-row"
+                title="Settes inn automatisk ved tegning når «Klammer/gjengestag»-innstillingen er på."
+              >
+                <span className="qty-label">
+                  <Wrench size={13} className="qty-auto-icon" />
+                  Klammer
+                </span>
+                <span className="qty-value">{totalClamps} stk</span>
+              </div>
+              {Object.entries(clampCounts).map(([key, count]) => (
+                <div
+                  key={key}
+                  className="qty-detail qty-clickable"
+                  title="Klikk for å utheve alt tegnet av denne typen"
+                  onClick={() => highlight(clampIds[key])}
+                >
+                  <span>{key}</span>
+                  <span className="qty-value">{count} stk</span>
+                </div>
+              ))}
+              <div className="qty-row" title="200 mm gjengestag per klammer.">
+                <span className="qty-label">
+                  <Wrench size={13} className="qty-auto-icon" />
+                  {CLAMP_ROD_LABEL}
+                </span>
+                <span className="qty-value">{formatMm(totalClamps * CLAMP_ROD_LENGTH_MM)}</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -186,7 +268,11 @@ export function QuantityPanel() {
           </div>
           {SYMBOL_TYPE_ORDER.filter((t) => symbolCounts[t] > 0).map((t) => (
             <div key={t}>
-              <div className="qty-row">
+              <div
+                className="qty-row qty-clickable"
+                title="Klikk for å utheve alt tegnet av denne typen"
+                onClick={() => highlight(Object.values(symbolDetailIds[t] ?? {}).flat())}
+              >
                 <span className="qty-label">
                   <span className="qty-swatch comp" />
                   {SYMBOL_DEFS[t].label}
@@ -194,7 +280,12 @@ export function QuantityPanel() {
                 <span className="qty-value">{symbolCounts[t]} stk</span>
               </div>
               {Object.entries(symbolDetail[t] ?? {}).map(([key, count]) => (
-                <div key={key} className="qty-detail comp">
+                <div
+                  key={key}
+                  className="qty-detail comp qty-clickable"
+                  title="Klikk for å utheve alt tegnet av denne typen"
+                  onClick={() => highlight(symbolDetailIds[t]?.[key])}
+                >
                   <span>{key}</span>
                   <span className="qty-value">{count} stk</span>
                 </div>

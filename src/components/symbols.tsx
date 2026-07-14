@@ -9,6 +9,9 @@ interface Props {
   selected: boolean;
   /** Vis luftrettings-piler på tilluft-/avtrekksventiler (styres i Innstillinger). */
   showArrows?: boolean;
+  /** Egendefinert strekfarge (brukes bl.a. for at tilluft-/avtrekksventiler skal ha
+   * samme farge som tilhørende kanal). Overstyres av valgt-tilstand (oransje). */
+  color?: string;
 }
 
 /** Tilluft-/avtrekksventil: firkantet diffusor-symbol (plan-visning av takdiffusor)
@@ -143,8 +146,8 @@ function DamperBase({ stroke, r, sideLabel }: { stroke: string; r: number; sideL
  * Tegner et symbol sentrert i (0,0). Plassering/rotasjon/skala settes på
  * Group-en utenfor (i SymbolNode). Bruker enkle, gjenkjennbare VVS-symboler.
  */
-export function SymbolGlyph({ type, selected, showArrows = true }: Props) {
-  const stroke = selected ? SEL : BASE;
+export function SymbolGlyph({ type, selected, showArrows = true, color }: Props) {
+  const stroke = selected ? SEL : (color ?? BASE);
   const sw = 2;
   const r = 11;
 
@@ -241,6 +244,30 @@ export function SymbolGlyph({ type, selected, showArrows = true }: Props) {
             strokeWidth={1.6}
             fill={selected ? 'rgba(245,166,35,0.15)' : 'transparent'}
           />
+        </Group>
+      );
+    case 'air_handling_unit':
+      // Ventilasjonsaggregat: rektangulær kasse med seksjonsdelere + vifte-/batteri-hint.
+      // Tegnes i nominell 2r×2r-boks slik at ikke-uniform skalering (scaleX/scaleY i
+      // SymbolNode) strekker den til oppgitt bredde × lengde.
+      return (
+        <Group>
+          <Rect
+            x={-r}
+            y={-r}
+            width={r * 2}
+            height={r * 2}
+            stroke={stroke}
+            strokeWidth={sw}
+            fill={selected ? 'rgba(245,166,35,0.10)' : 'transparent'}
+          />
+          <Line points={[-r * 0.33, -r, -r * 0.33, r]} stroke={stroke} strokeWidth={1} />
+          <Line points={[r * 0.33, -r, r * 0.33, r]} stroke={stroke} strokeWidth={1} />
+          {/* Vifte i høyre seksjon */}
+          <Circle x={r * 0.66} radius={r * 0.3} stroke={stroke} strokeWidth={1.2} />
+          {/* Batteri-hint (kryss) i venstre seksjon */}
+          <Line points={[-r * 0.85, -r * 0.5, -r * 0.47, r * 0.5]} stroke={stroke} strokeWidth={1} />
+          <Line points={[-r * 0.85, r * 0.5, -r * 0.47, -r * 0.5]} stroke={stroke} strokeWidth={1} />
         </Group>
       );
     default:

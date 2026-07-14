@@ -5,6 +5,7 @@
 import type {
   BendEntity,
   BranchEntity,
+  ClampEntity,
   LineEntity,
   ScaleState,
   SymbolDef,
@@ -14,6 +15,8 @@ import type {
 } from '../types';
 import {
   CATEGORIES,
+  CLAMP_ROD_LABEL,
+  CLAMP_ROD_LENGTH_MM,
   SUBCATEGORIES,
   SYMBOL_DEFS,
   SYMBOL_TYPE_ORDER,
@@ -70,7 +73,30 @@ export interface QuantityReport {
   jointCounts: Record<string, number>;
   branchCounts: Record<string, number>;
   transitionCounts: Record<string, number>;
+  /** Klammer (bæring) satt inn automatisk ved tegning (se store.ts: autoInsertClamps) –
+   * summert per underkategori+materiale+dimensjon, samme mønster som bendCounts osv.
+   * Gjengestag-mengden følger 1:1 av klammerantallet (200 mm per klammer). */
+  clampCounts: Record<string, number>;
+  totalClamps: number;
   rows: QuantityRow[];
+  /** Entitets-id-er bak hver rad, brukt til å utheve alt tegnet av samme type i
+   * mengdelisten når man klikker en rad (se QuantityPanel). Nøklene her matcher
+   * nøklene i subDetail/symbolDetail/bendCounts/jointCounts/branchCounts/
+   * transitionCounts 1:1. «Skjøter» (nippel/muffe) har ingen egen entitet – der
+   * peker id-ene til linjen(e) skjøten gjelder for. Legacy flerpunkts-bend (ingen
+   * egen BendEntity) peker tilsvarende til vertslinjen. */
+  subLineIds: Record<string, string[]>;
+  subDetailIds: Record<string, Record<string, string[]>>;
+  symbolDetailIds: Partial<Record<SymbolType, Record<string, string[]>>>;
+  bendIds: Record<string, string[]>;
+  jointIds: Record<string, string[]>;
+  branchIds: Record<string, string[]>;
+  transitionIds: Record<string, string[]>;
+  clampIds: Record<string, string[]>;
+}
+
+function pushId(map: Record<string, string[]>, key: string, id: string) {
+  (map[key] ??= []).push(id);
 }
 
 export function buildQuantityReport(
@@ -81,6 +107,7 @@ export function buildQuantityReport(
   scale: ScaleState,
   standardLengths: { pipe: number; duct: number },
   bends: BendEntity[] = [],
+  clamps: ClampEntity[] = [],
 ): QuantityReport {
   const mpp = scale.metersPerPixel;
 
@@ -89,6 +116,10 @@ export function buildQuantityReport(
   const subDetail: Record<string, Record<string, number>> = {};
   const bendCounts: Record<string, number> = {};
   const jointCounts: Record<string, number> = {};
+  const subLineIds: Record<string, string[]> = {};
+  const subDetailIds: Record<string, Record<string, string[]>> = {};
+  const bendIds: Record<string, string[]> = {};
+  const jointIds: Record<string, string[]> = {};
   let totalBends = 0;
   let totalJoints = 0;
   const rows: QuantityRow[] = [];
@@ -100,8 +131,10 @@ export function buildQuantityReport(
     const mm = lengthMm(polylineLength(line.points), mpp);
     subTotal[line.subId] = (subTotal[line.subId] ?? 0) + mm;
     subCount[line.subId] = (subCount[line.subId] ?? 0) + 1;
+    pushId(subLineIds, line.subId, line.id);
     const key = `${line.material} · ${line.dimension}`;
     (subDetail[line.subId] ??= {})[key] = (subDetail[line.subId]?.[key] ?? 0) + mm;
+    pushId((subDetailIds[line.subId] ??= {}), key, line.id);
     rows.push({
       system,
       underkategori: sub?.label ?? line.subId,
@@ -120,6 +153,7 @@ export function buildQuantityReport(
       const angle = classifyBendAngle(b.angleDeg);
       const globalBendKey = `${sub?.label ?? line.subId} · ${line.material} · ${line.dimension} · ${angle}° bend`;
       bendCounts[globalBendKey] = (bendCounts[globalBendKey] ?? 0) + 1;
+      pushId(bendIds, globalBendKey, line.id);
       totalBends += 1;
       rows.push({
         system,
@@ -139,6 +173,7 @@ export function buildQuantityReport(
         const label = jointLabel(kind);
         const globalJointKey = `${sub?.label ?? line.subId} · ${line.material} · ${line.dimension} · ${label}`;
         jointCounts[globalJointKey] = (jointCounts[globalJointKey] ?? 0) + joints;
+        pushId(jointIds, globalJointKey, line.id);
         totalJoints += joints;
         rows.push({
           system,
@@ -159,6 +194,7 @@ export function buildQuantityReport(
     const system = cat ? `${cat.code} ${cat.label}` : b.subId;
     const globalBendKey = `${sub?.label ?? b.subId} · ${b.material} · ${b.dimension} · ${b.angleDeg}° bend`;
     bendCounts[globalBendKey] = (bendCounts[globalBendKey] ?? 0) + 1;
+    pushId(bendIds, globalBendKey, b.id);
     totalBends += 1;
     rows.push({
       system,
@@ -176,12 +212,14 @@ export function buildQuantityReport(
     {} as Record<SymbolType, number>,
   );
   const symbolDetail: Partial<Record<SymbolType, Record<string, number>>> = {};
+  const symbolDetailIds: Partial<Record<SymbolType, Record<string, string[]>>> = {};
   for (const sym of symbols) {
     symbolCounts[sym.type] += 1;
     const def = SYMBOL_DEFS[sym.type];
     const key = symbolDetailKey(def, sym.props);
     const detail = (symbolDetail[sym.type] ??= {});
     detail[key] = (detail[key] ?? 0) + 1;
+    pushId((symbolDetailIds[sym.type] ??= {}), key, sym.id);
   }
   for (const t of SYMBOL_TYPE_ORDER) {
     const detail = symbolDetail[t];
@@ -200,11 +238,13 @@ export function buildQuantityReport(
   }
 
   const transitionCounts: Record<string, number> = {};
+  const transitionIds: Record<string, string[]> = {};
   for (const t of transitions) {
     const sub = SUBCATEGORIES[t.subId];
     const cat = categoryOf(t.subId);
     const key = `${sub?.label ?? t.subId} · ${t.material} · ${t.fromDimension} → ${t.toDimension}`;
     transitionCounts[key] = (transitionCounts[key] ?? 0) + 1;
+    pushId(transitionIds, key, t.id);
     rows.push({
       system: cat ? `${cat.code} ${cat.label}` : t.subId,
       underkategori: sub?.label ?? t.subId,
@@ -217,11 +257,13 @@ export function buildQuantityReport(
   }
 
   const branchCounts: Record<string, number> = {};
+  const branchIds: Record<string, string[]> = {};
   for (const b of branches) {
     const sub = SUBCATEGORIES[b.subId];
     const cat = categoryOf(b.subId);
     const globalBranchKey = `${sub?.label ?? b.subId} · ${b.material} · ${b.dimension}→${b.branchDimension} · ${branchFittingLabel(b.fittingType)}`;
     branchCounts[globalBranchKey] = (branchCounts[globalBranchKey] ?? 0) + 1;
+    pushId(branchIds, globalBranchKey, b.id);
     rows.push({
       system: cat ? `${cat.code} ${cat.label}` : b.subId,
       underkategori: sub?.label ?? b.subId,
@@ -230,6 +272,40 @@ export function buildQuantityReport(
       lengdeMm: 0,
       antall: 1,
       type: branchFittingLabel(b.fittingType),
+    });
+  }
+
+  const clampCounts: Record<string, number> = {};
+  const clampIds: Record<string, string[]> = {};
+  let totalClamps = 0;
+  for (const c of clamps) {
+    const line = lines.find((l) => l.id === c.lineId);
+    const subId = line?.subId ?? '';
+    const sub = SUBCATEGORIES[subId];
+    const cat = categoryOf(subId);
+    const material = line?.material ?? '';
+    const key = `${sub?.label ?? subId} · ${material} · ${c.dimension}`;
+    clampCounts[key] = (clampCounts[key] ?? 0) + 1;
+    pushId(clampIds, key, c.id);
+    totalClamps += 1;
+    const system = cat ? `${cat.code} ${cat.label}` : subId;
+    rows.push({
+      system,
+      underkategori: sub?.label ?? subId,
+      materiale: material,
+      dimensjon: c.dimension,
+      lengdeMm: 0,
+      antall: 1,
+      type: 'Klammer',
+    });
+    rows.push({
+      system,
+      underkategori: sub?.label ?? subId,
+      materiale: material,
+      dimensjon: c.dimension,
+      lengdeMm: CLAMP_ROD_LENGTH_MM,
+      antall: 1,
+      type: CLAMP_ROD_LABEL,
     });
   }
 
@@ -245,7 +321,17 @@ export function buildQuantityReport(
     jointCounts,
     branchCounts,
     transitionCounts,
+    clampCounts,
+    totalClamps,
     rows,
+    subLineIds,
+    subDetailIds,
+    symbolDetailIds,
+    bendIds,
+    jointIds,
+    branchIds,
+    transitionIds,
+    clampIds,
   };
 }
 

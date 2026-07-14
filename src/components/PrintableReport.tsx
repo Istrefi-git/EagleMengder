@@ -15,10 +15,11 @@ export function PrintableReport({ tilbudName }: Props) {
   const transitions = useStore((s) => s.transitions);
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
+  const clamps = useStore((s) => s.clamps);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
 
-  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends);
+  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
   const totalMm = report.rows.reduce((a, r) => a + r.lengdeMm, 0);
 
   return (

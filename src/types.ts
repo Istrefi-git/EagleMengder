@@ -18,9 +18,20 @@ export type SymbolType =
   | 'silencer'
   | 'supply_diffuser'
   | 'extract_diffuser'
-  | 'fan';
+  | 'fan'
+  | 'air_handling_unit';
 
-export type AnnotationType = 'text' | 'cloud';
+export type AnnotationType =
+  | 'text'
+  | 'textbox'
+  | 'callout'
+  | 'cloud'
+  | 'line'
+  | 'arrow'
+  | 'ellipse'
+  | 'rect'
+  | 'polygon'
+  | 'highlight';
 
 export type MeasurementType = 'distance' | 'area';
 
@@ -149,8 +160,9 @@ export interface TransitionEntity {
   y: number;
 }
 
-/** Frittstående markup på tegningen – tekstboks eller revisjonssky, à la en
- * PDF-leser/markup-verktøy. Påvirker ikke mengdelisten. */
+/** Frittstående markup på tegningen – tekst, tekstboks, melding (callout), sky,
+ * former (linje/pil/ellipse/rektangel/polygon) eller markering (highlighter), à la
+ * en PDF-leser/markup-verktøy (f.eks. PDF-XChange). Påvirker ikke mengdelisten. */
 export interface AnnotationEntity {
   id: string;
   page: number;
@@ -159,13 +171,22 @@ export interface AnnotationEntity {
   y: number;
   color: string;
   rotation: number;
-  /** Tekst-annotasjon */
+  /** Tekst / tekstboks / melding */
   text?: string;
   fontSize?: number;
-  /** Sky-annotasjon (bounding box-størrelse + strøkbredde) */
+  /** Boks-baserte former (sky, rektangel, ellipse, markering, tekstboks, melding) */
   width?: number;
   height?: number;
   strokeWidth?: number;
+  /** Valgfri fyllfarge for rektangel/ellipse/polygon/tekstboks */
+  fill?: string;
+  /** Fyll-/markørstyrke (0–1) – brukt av markerings-verktøyet (highlight) */
+  opacity?: number;
+  /** Punkt-baserte former (linje, pil, polygon) – flat [x0,y0,x1,y1,...] i bildekoordinater */
+  points?: number[];
+  /** Melding (callout): punktet leder-streken peker til. Selve tekstboksen står i x,y. */
+  anchorX?: number;
+  anchorY?: number;
 }
 
 /** Merkelapp (tag) med leaderlinje, festet til et rør/kanal – viser rørtype +
@@ -190,6 +211,35 @@ export interface TagEntity {
 export function tagLabel(line: LineEntity): string {
   return isDuctSub(line.subId) ? line.dimension : `${line.material} · ${line.dimension}`;
 }
+
+/** Klammer (bæring) for et rør/kanal, med tilhørende gjengestag – satt inn automatisk
+ * langs en tegnet strekning når «Innstillinger → Klammer/gjengestag» er slått på (se
+ * `setAutoInsertClamps`/`setClampSpacing`), men kan flyttes eller slettes manuelt som
+ * enhver annen markør (à la bend/overgang/avgreining). */
+export interface ClampEntity {
+  id: string;
+  page: number;
+  /** Id til røret/kanalen klammeret er festet til – brukes til å flytte klammeret med
+   * når linjen flyttes (moveSingleLine), og til å telle det i riktig mengderad. */
+  lineId: string;
+  x: number;
+  y: number;
+  /** Retningsvinkel (grader) langs røret/kanalen der klammeret sitter – klammer-glyphen
+   * tegnes på tvers av denne retningen, samme mønster som BranchEntity.angleDeg. */
+  angleDeg: number;
+  /** Samme dimensjon som røret/kanalen klammeret er festet til. */
+  dimension: string;
+}
+
+/** Standard klammeravstand (mm) – kanal hver 2400 mm, rør hver 1500 mm. Konfigurerbart
+ * i Innstillinger (se store.ts: clampSpacing). */
+export const DEFAULT_CLAMP_SPACING: Record<'pipe' | 'duct', number> = {
+  pipe: 1500,
+  duct: 2400,
+};
+/** Lengde (mm) gjengestag per klammer – fast, ikke konfigurerbar (bransjestandard). */
+export const CLAMP_ROD_LENGTH_MM = 200;
+export const CLAMP_ROD_LABEL = 'Ø8mm gjengestag';
 
 /** Frittstående målepunkt/areal-måling («linjal»-verktøy) – punkt-til-punkt avstand
  * eller et lukket rom-polygon for arealmåling. Rent visuelt hjelpemiddel, påvirker
@@ -223,10 +273,13 @@ const TAPPEVANN_DIM = ['DN10', 'DN12', 'DN15', 'DN18', 'DN22', 'DN28', 'DN35', '
 const AVLOP_DIM = ['Ø32', 'Ø40', 'Ø50', 'Ø75', 'Ø110', 'Ø160'];
 const VARME_DIM = ['DN10', 'DN15', 'DN20', 'DN25', 'DN32', 'DN40', 'DN50', 'DN65', 'DN80', 'DN100'];
 const KJOLE_DIM = VARME_DIM;
-const KANAL_DIM = [
-  'Ø100', 'Ø125', 'Ø160', 'Ø200', 'Ø250', 'Ø315', 'Ø400', 'Ø500',
-  '200x100', '400x200', '500x300', '600x400', '800x500',
-];
+const KANAL_DIM_ROUND = ['Ø100', 'Ø125', 'Ø160', 'Ø200', 'Ø250', 'Ø315', 'Ø400', 'Ø500'];
+const KANAL_DIM_RECT = ['200x100', '400x200', '500x300', '600x400', '800x500'];
+const KANAL_DIM = [...KANAL_DIM_ROUND, ...KANAL_DIM_RECT];
+/** Materialet «Rektangulær kanal (stål)» bruker rektangulære mål; alle andre
+ * kanal-rørtyper (spiro, fleks, isolert spiro) er runde. */
+export const RECT_DUCT_MATERIAL = 'Rektangulær kanal (stål)';
+export const isRectDim = (d: string): boolean => /^\d+\s*[x×]\s*\d+$/i.test(d);
 const SILENCER_DIM = ['Ø125', 'Ø160', 'Ø200', 'Ø250', 'Ø315', 'Ø400', 'Ø500'];
 const SILENCER_LENGTH = ['300', '500', '600', '1000'];
 
@@ -299,6 +352,23 @@ export function categoryOf(subId: string): CategoryDef {
  * både runde Ø-dimensjoner og rektangulære BxH-dimensjoner for kanaler). */
 export function mergedDimensions(sub: SubCategoryDef, customDimensions: Record<string, string[]>): string[] {
   return mergedOptions(sub.id, sub.dimensions, customDimensions);
+}
+
+/** Dimensjonssettet for en underkategori gitt valgt rørtype/material. For
+ * ventilasjonskanaler skiller vi rundt (spiro/fleks/isolert spiro) fra
+ * rektangulært, slik at dimensjonsvelgeren kun viser mål som hører til den valgte
+ * rørtypen. Egendefinerte dimensjoner slås inn på samme måte som mergedDimensions,
+ * men filtreres til riktig form (rund vs rektangulær) for kanaler. */
+export function dimensionsForMaterial(
+  sub: SubCategoryDef,
+  material: string | undefined,
+  customDimensions: Record<string, string[]>,
+): string[] {
+  if (!isDuctSub(sub.id)) return mergedDimensions(sub, customDimensions);
+  const rect = material === RECT_DUCT_MATERIAL;
+  const base = rect ? KANAL_DIM_RECT : KANAL_DIM_ROUND;
+  const custom = (customDimensions[sub.id] ?? []).filter((d) => isRectDim(d) === rect && !base.includes(d));
+  return custom.length > 0 ? [...base, ...custom] : base;
 }
 
 /** Generisk variant av mergedDimensions – slår sammen en vilkårlig grunnliste med
@@ -460,6 +530,16 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
       { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 },
     ],
   },
+  air_handling_unit: {
+    type: 'air_handling_unit',
+    label: 'Ventilasjonsaggregat',
+    kind: 'duct',
+    fields: [
+      { key: 'length', label: 'Lengde', kind: 'number', unit: 'mm', default: 2000 },
+      { key: 'width', label: 'Bredde', kind: 'number', unit: 'mm', default: 1200 },
+      { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'm³/h', default: 0 },
+    ],
+  },
 };
 
 export const SYMBOL_TYPE_ORDER: SymbolType[] = [
@@ -478,6 +558,7 @@ export const SYMBOL_TYPE_ORDER: SymbolType[] = [
   'fire_damper',
   'silencer',
   'fan',
+  'air_handling_unit',
 ];
 
 /** Standardverdier for et symbols props-bag, avledet fra feltskjemaet. */
@@ -502,6 +583,33 @@ export function branchFittingLabel(type: BranchFittingType): string {
 export function defaultBranchFittingForPipe(subId: string): BranchFittingType {
   return subId === '31.avlop' ? 'wye45' : 'tee';
 }
+
+// ── Annotasjon/markup-verktøy (tekst, tekstboks, melding, sky, former, marker) ──
+
+/** Visningsnavn for hvert markup-/annotasjonsverktøy, brukt i HUD-en og egenskapspanelet. */
+const ANNOTATION_LABELS: Record<AnnotationType, string> = {
+  text: 'Tekst',
+  textbox: 'Tekstboks',
+  callout: 'Melding',
+  cloud: 'Sky',
+  line: 'Linje',
+  arrow: 'Pil',
+  ellipse: 'Ellipse',
+  rect: 'Rektangel',
+  polygon: 'Polygon',
+  highlight: 'Marker',
+};
+
+export function annotationTypeLabel(type: AnnotationType): string {
+  return ANNOTATION_LABELS[type];
+}
+
+/** Tekst-baserte annotasjonstyper (viser fontstørrelse-kontroll, ikke tykkelse). */
+export const TEXT_ANNOTATION_TYPES: ReadonlySet<AnnotationType> = new Set(['text', 'textbox', 'callout']);
+/** Tekstboks-baserte typer (boks med redigerbar tekst – tekstboks og melding, men ikke fritt-flytende tekst). */
+export const TEXT_BOX_ANNOTATION_TYPES: ReadonlySet<AnnotationType> = new Set(['textbox', 'callout']);
+/** Punkt-baserte former (geometri lagret i `points`, ikke x/y/bredde/høyde). */
+export const POINT_ANNOTATION_TYPES: ReadonlySet<AnnotationType> = new Set(['line', 'arrow', 'polygon']);
 
 // ── Bend-vinkler ─────────────────────────────────────────────────────────
 //

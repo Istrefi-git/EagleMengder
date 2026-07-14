@@ -2,12 +2,17 @@ import { Trash2 } from 'lucide-react';
 import { useStore } from '../store';
 import {
   CATEGORIES,
+  CLAMP_ROD_LABEL,
+  CLAMP_ROD_LENGTH_MM,
   SUBCATEGORIES,
   SYMBOL_DEFS,
+  TEXT_ANNOTATION_TYPES,
+  annotationTypeLabel,
   branchFittingLabel,
   categoryOf,
   colorFor,
   mergedDimensions,
+  dimensionsForMaterial,
   tagLabel,
 } from '../types';
 import { polygonArea, polylineLength } from '../lib/geometry';
@@ -23,6 +28,7 @@ export function PropertiesPanel() {
   const bends = useStore((s) => s.bends);
   const annotations = useStore((s) => s.annotations);
   const tags = useStore((s) => s.tags);
+  const clamps = useStore((s) => s.clamps);
   const measurements = useStore((s) => s.measurements);
   const updateAnnotation = useStore((s) => s.updateAnnotation);
   const scale = useStore((s) => s.scale);
@@ -45,6 +51,9 @@ export function PropertiesPanel() {
       ? selectedLines[0]?.subId
       : null;
     const sub = commonSubId ? SUBCATEGORIES[commonSubId] : null;
+    const commonMaterial = selectedLines.every((l) => l.material === selectedLines[0]?.material)
+      ? selectedLines[0]?.material
+      : undefined;
     return (
       <section className="properties-panel">
         <div className="panel-header">
@@ -85,7 +94,10 @@ export function PropertiesPanel() {
                 <option value="" disabled>
                   Velg…
                 </option>
-                {mergedDimensions(sub, customDimensions).map((d) => (
+                {(commonMaterial
+                  ? dimensionsForMaterial(sub, commonMaterial, customDimensions)
+                  : mergedDimensions(sub, customDimensions)
+                ).map((d) => (
                   <option key={d} value={d}>
                     {d}
                   </option>
@@ -157,7 +169,16 @@ export function PropertiesPanel() {
           <span>Materiale / rørtype</span>
           <select
             value={line.material}
-            onChange={(e) => updateLineProps(line.id, { material: e.target.value })}
+            onChange={(e) => {
+              const material = e.target.value;
+              const dims = dimensionsForMaterial(sub, material, customDimensions);
+              // Bytter man mellom rund og rektangulær rørtype, nullstill dimensjonen til
+              // første gyldige verdi hvis den gamle ikke finnes i det nye settet.
+              updateLineProps(
+                line.id,
+                dims.includes(line.dimension) ? { material } : { material, dimension: dims[0] },
+              );
+            }}
           >
             {sub.materials.map((m) => (
               <option key={m} value={m}>
@@ -172,7 +193,7 @@ export function PropertiesPanel() {
             value={line.dimension}
             onChange={(e) => updateLineProps(line.id, { dimension: e.target.value })}
           >
-            {mergedDimensions(sub, customDimensions).map((d) => (
+            {dimensionsForMaterial(sub, line.material, customDimensions).map((d) => (
               <option key={d} value={d}>
                 {d}
               </option>
@@ -306,12 +327,15 @@ export function PropertiesPanel() {
   if (selectedKind === 'annotation') {
     const note = annotations.find((a) => a.id === selectedId);
     if (!note) return null;
+    const label = annotationTypeLabel(note.type);
+    const isText = TEXT_ANNOTATION_TYPES.has(note.type);
+    const hasText = note.type === 'text' || note.type === 'textbox' || note.type === 'callout';
     return (
       <section className="properties-panel">
         <div className="panel-header">
-          <h3>Egenskaper – {note.type === 'text' ? 'Tekst' : 'Sky'}</h3>
+          <h3>Egenskaper – {label}</h3>
         </div>
-        {note.type === 'text' && (
+        {hasText && (
           <label className="field">
             <span>Tekst</span>
             <textarea
@@ -329,7 +353,7 @@ export function PropertiesPanel() {
             onChange={(e) => updateAnnotation(note.id, { color: e.target.value })}
           />
         </label>
-        {note.type === 'text' ? (
+        {isText ? (
           <label className="field">
             <span>Skriftstørrelse</span>
             <input
@@ -338,6 +362,18 @@ export function PropertiesPanel() {
               max={48}
               value={note.fontSize ?? 14}
               onChange={(e) => updateAnnotation(note.id, { fontSize: Number(e.target.value) })}
+            />
+          </label>
+        ) : note.type === 'highlight' ? (
+          <label className="field">
+            <span>Styrke</span>
+            <input
+              type="range"
+              min={0.1}
+              max={0.8}
+              step={0.05}
+              value={note.opacity ?? 0.35}
+              onChange={(e) => updateAnnotation(note.id, { opacity: Number(e.target.value) })}
             />
           </label>
         ) : (
@@ -354,7 +390,7 @@ export function PropertiesPanel() {
         )}
         <button className="btn danger full" onClick={deleteSelected}>
           <Trash2 size={15} />
-          Slett {note.type === 'text' ? 'tekst' : 'sky'}
+          Slett {label.toLowerCase()}
         </button>
       </section>
     );
@@ -382,6 +418,35 @@ export function PropertiesPanel() {
         <button className="btn danger full" onClick={deleteSelected}>
           <Trash2 size={15} />
           Slett tag
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'clamp') {
+    const clamp = clamps.find((c) => c.id === selectedId);
+    if (!clamp) return null;
+    const line = lines.find((l) => l.id === clamp.lineId);
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Klammer</h3>
+        </div>
+        <div className="field readonly">
+          <span>Festet til</span>
+          <strong>{line ? `${SUBCATEGORIES[line.subId]?.label ?? line.subId}` : 'Slettet linje'}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Dimensjon</span>
+          <strong>{clamp.dimension}</strong>
+        </div>
+        <div className="field readonly">
+          <span>Gjengestag</span>
+          <strong>{CLAMP_ROD_LABEL} · {CLAMP_ROD_LENGTH_MM} mm</strong>
+        </div>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett klammer
         </button>
       </section>
     );

@@ -4,20 +4,29 @@ import {
   ArrowDownToLine,
   ArrowRightLeft,
   ArrowUpFromLine,
+  Box,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Circle,
   Cloud,
   Eye,
   EyeOff,
   GitFork,
   Hand,
+  Highlighter,
   LandPlot,
+  Minus,
+  MessageSquareText,
   MousePointer2,
+  MoveUpRight,
+  Pentagon,
   Plus,
   Ruler,
   Settings2,
+  Square,
   Tag as TagIcon,
+  TextCursorInput,
   Trash2,
   Type,
   Wrench,
@@ -37,7 +46,7 @@ import {
   VavDamperIcon,
 } from './equipmentIcons';
 import { useStore } from '../store';
-import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
+import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor, dimensionsForMaterial, isDuctSub, isRectDim, RECT_DUCT_MATERIAL } from '../types';
 import type { SubCategoryDef, SymbolType, ToolMode } from '../types';
 
 const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>> = {
@@ -56,6 +65,7 @@ const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>
   supply_diffuser: ArrowUpFromLine,
   extract_diffuser: ArrowDownToLine,
   fan: FanIcon,
+  air_handling_unit: Box,
 };
 
 const VENT_SYMBOLS: SymbolType[] = SYMBOL_TYPE_ORDER.filter((t) => SYMBOL_DEFS[t].kind === 'duct');
@@ -253,6 +263,8 @@ export function Toolbar() {
       <div className="tool-section">
         <span className="tool-heading">Tekst &amp; skyer</span>
         <ToolButton mode="annotation:text" label="Tekst" icon={Type} />
+        <ToolButton mode="annotation:textbox" label="Tekstboks" icon={TextCursorInput} />
+        <ToolButton mode="annotation:callout" label="Melding" icon={MessageSquareText} />
         <ToolButton mode="annotation:cloud" label="Sky" icon={Cloud} />
       </div>
 
@@ -261,6 +273,12 @@ export function Toolbar() {
         <ToolButton mode="tag" label="Tag" icon={TagIcon} />
         <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} />
         <ToolButton mode="measure:area" label="Areal" icon={LandPlot} />
+        <ToolButton mode="annotation:line" label="Linje" icon={Minus} />
+        <ToolButton mode="annotation:arrow" label="Pil" icon={MoveUpRight} />
+        <ToolButton mode="annotation:ellipse" label="Ellipse" icon={Circle} />
+        <ToolButton mode="annotation:rect" label="Rektangel" icon={Square} />
+        <ToolButton mode="annotation:polygon" label="Polygon" icon={Pentagon} />
+        <ToolButton mode="annotation:highlight" label="Marker" icon={Highlighter} />
       </div>
 
       <div className="tool-section">
@@ -395,7 +413,7 @@ function SubPicker({
                 {pickingMaterial} – velg dimensjon
               </div>
               <div className="flyout-grid">
-                {sub.dimensions.map((d) => (
+                {dimensionsForMaterial(sub, pickingMaterial, {}).map((d) => (
                   <button
                     key={d}
                     className="flyout-chip"
@@ -404,7 +422,10 @@ function SubPicker({
                     {d}
                   </button>
                 ))}
-                {customDimensions.map((d) => (
+                {(isDuctSub(sub.id)
+                  ? customDimensions.filter((d) => isRectDim(d) === (pickingMaterial === RECT_DUCT_MATERIAL))
+                  : customDimensions
+                ).map((d) => (
                   <button
                     key={d}
                     className="flyout-chip custom"

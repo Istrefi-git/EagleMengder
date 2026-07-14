@@ -5,6 +5,7 @@ import type {
   BendEntity,
   BranchEntity,
   BranchFittingType,
+  ClampEntity,
   LineEntity,
   MeasurementEntity,
   MeasurementType,
@@ -18,15 +19,19 @@ import type {
   TransitionEntity,
 } from './types';
 import {
+  DEFAULT_CLAMP_SPACING,
   DEFAULT_PIPE_RENDER_STYLE,
   DEFAULT_STANDARD_LENGTHS,
   DEFAULT_THEME,
   SUBCATEGORIES,
+  categoryOf,
   defaultSymbolProps,
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
-import { classifyBendAngle, lineIntersect, polylineBendAngles } from './lib/geometry';
+import { classifyBendAngle, closestPointOnPolyline, lineIntersect, polylineBendAngles } from './lib/geometry';
+import { dimensionDiameterMm } from './lib/dimension';
+import { mmToPx } from './lib/scale';
 
 let idCounter = 0;
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${idCounter++}`;
@@ -76,6 +81,7 @@ export type SelectedKind =
   | 'annotation'
   | 'bend'
   | 'tag'
+  | 'clamp'
   | 'measurement'
   | null;
 
@@ -98,6 +104,7 @@ export interface DrawSnapshot {
   bends: BendEntity[];
   annotations: AnnotationEntity[];
   tags: TagEntity[];
+  clamps: ClampEntity[];
   measurements: MeasurementEntity[];
 }
 
@@ -121,6 +128,10 @@ interface PersistedSettings {
   /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen
    * i CATEGORIES-katalogen. */
   customColors: Record<string, string>;
+  /** Sett inn klammer/gjengestag automatisk på nye kanaler/rør som tegnes. */
+  autoInsertClamps: boolean;
+  /** Avstand (mm) mellom klammer, per bygningsdel-type. */
+  clampSpacing: { pipe: number; duct: number };
 }
 
 function loadSettings(): PersistedSettings {
@@ -161,6 +172,17 @@ function loadSettings(): PersistedSettings {
               ),
             )
           : {},
+      autoInsertClamps: typeof parsed.autoInsertClamps === 'boolean' ? parsed.autoInsertClamps : false,
+      clampSpacing: {
+        pipe:
+          parsed.clampSpacing && typeof parsed.clampSpacing.pipe === 'number'
+            ? parsed.clampSpacing.pipe
+            : DEFAULT_CLAMP_SPACING.pipe,
+        duct:
+          parsed.clampSpacing && typeof parsed.clampSpacing.duct === 'number'
+            ? parsed.clampSpacing.duct
+            : DEFAULT_CLAMP_SPACING.duct,
+      },
     };
   } catch {
     return defaultSettings();
@@ -178,6 +200,8 @@ function defaultSettings(): PersistedSettings {
     customSystems: [],
     customDimensions: {},
     customColors: {},
+    autoInsertClamps: false,
+    clampSpacing: { ...DEFAULT_CLAMP_SPACING },
   };
 }
 
@@ -203,6 +227,8 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     customSystems: s.customSystems,
     customDimensions: s.customDimensions,
     customColors: s.customColors,
+    autoInsertClamps: s.autoInsertClamps,
+    clampSpacing: s.clampSpacing,
     ...overrides,
   });
 }
@@ -238,6 +264,9 @@ interface AppState {
   annotations: AnnotationEntity[];
   /** Merkelapper (tags) med leaderlinje, festet til rør/kanaler – viser rørtype/dimensjon */
   tags: TagEntity[];
+  /** Klammer (bæring) for rør/kanaler, med tilhørende gjengestag – auto-generert ved
+   * tegning når «Klammer/gjengestag»-innstillingen er på, kan flyttes/slettes manuelt */
+  clamps: ClampEntity[];
   /** Frittstående mål (punkt-til-punkt avstand / rom-areal) – påvirker ikke mengdelisten */
   measurements: MeasurementEntity[];
 
@@ -284,8 +313,14 @@ interface AppState {
   customDimensions: Record<string, string[]>;
   /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen i katalogen. */
   customColors: Record<string, string>;
-  /** Sist brukt stil for nye tekst-/sky-annotasjoner */
-  annotationConfig: { text: { color: string; fontSize: number }; cloud: { color: string; strokeWidth: number } };
+  /** Sett inn klammer/gjengestag automatisk på nye kanaler/rør som tegnes. */
+  autoInsertClamps: boolean;
+  /** Avstand (mm) mellom klammer, per bygningsdel-type. */
+  clampSpacing: { pipe: number; duct: number };
+  /** Sist brukt stil for nye annotasjoner/markup, per type. Én felles form (ikke alle
+   * felt er relevante for alle typer – f.eks. leser tekst-typene kun fontSize, mens
+   * former leser strokeWidth) holder typingen enkel og gjenbrukbar. */
+  annotationConfig: Record<AnnotationType, { color: string; strokeWidth: number; fontSize: number; opacity: number }>;
 
   // Ventende valg av avgreiningstype for kanaler (påstikk/T-kanal)
   pendingBranchChoice: PendingBranchChoice | null;
@@ -412,12 +447,14 @@ interface AppState {
     type: AnnotationType,
     x: number,
     y: number,
-    extra?: Partial<Pick<AnnotationEntity, 'text' | 'width' | 'height' | 'rotation'>>,
+    extra?: Partial<
+      Pick<AnnotationEntity, 'text' | 'width' | 'height' | 'rotation' | 'points' | 'fill' | 'opacity'>
+    >,
   ) => void;
   updateAnnotation: (id: string, patch: Partial<AnnotationEntity>) => void;
   setAnnotationConfig: (
     type: AnnotationType,
-    patch: Partial<{ color: string; fontSize: number; strokeWidth: number }>,
+    patch: Partial<{ color: string; fontSize: number; strokeWidth: number; opacity: number }>,
   ) => void;
 
   addTransition: (
@@ -445,6 +482,10 @@ interface AppState {
   updateTagLabel: (id: string, labelX: number, labelY: number) => void;
   /** Flytter valgt tag-etikett med (dx,dy) via piltastene. */
   nudgeTag: (id: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
+  addClamp: (lineId: string, x: number, y: number, angleDeg: number, dimension: string) => void;
+  updateClampPosition: (id: string, x: number, y: number) => void;
+  /** Flytter valgt klammer med (dx,dy) via piltastene. */
+  nudgeClamp: (id: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
   addMeasurement: (type: MeasurementType, points: number[]) => void;
   /** Flytter valgt(e) linje(r) med (dx,dy) – flytter automatisk med hele den
    * sammenhengende rør-/kanalstrekningen (delte endepunkter), samt tilhørende
@@ -458,6 +499,8 @@ interface AppState {
   moveSingleLine: (lineId: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
 
   setStandardLength: (kind: 'pipe' | 'duct', mm: number) => void;
+  setAutoInsertClamps: (on: boolean) => void;
+  setClampSpacing: (kind: 'pipe' | 'duct', mm: number) => void;
   setPipeRenderStyle: (style: PipeRenderStyle) => void;
   setTheme: (theme: Theme) => void;
   openSettingsDialog: () => void;
@@ -507,6 +550,7 @@ export interface TilbudSnapshot {
   bends: BendEntity[];
   annotations: AnnotationEntity[];
   tags: TagEntity[];
+  clamps: ClampEntity[];
   measurements: MeasurementEntity[];
   scale: ScaleState;
   lineConfig: Record<string, { material: string; dimension: string }>;
@@ -533,6 +577,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: s.bends,
       annotations: s.annotations,
       tags: s.tags,
+      clamps: s.clamps,
       measurements: s.measurements,
     };
     set((st) => ({
@@ -562,6 +607,7 @@ export const useStore = create<AppState>((set, get) => {
   bends: [],
   annotations: [],
   tags: [],
+  clamps: [],
   measurements: [],
 
   tool: 'select',
@@ -587,9 +633,19 @@ export const useStore = create<AppState>((set, get) => {
   customSystems: initialSettings.customSystems,
   customDimensions: initialSettings.customDimensions,
   customColors: initialSettings.customColors,
+  autoInsertClamps: initialSettings.autoInsertClamps,
+  clampSpacing: initialSettings.clampSpacing,
   annotationConfig: {
-    text: { color: '#1a1a1a', fontSize: 14 },
-    cloud: { color: '#e74c3c', strokeWidth: 2 },
+    text: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    textbox: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    callout: { color: '#1a1a1a', strokeWidth: 2, fontSize: 13, opacity: 1 },
+    cloud: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    line: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    arrow: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    ellipse: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    rect: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    polygon: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
+    highlight: { color: '#ffff00', strokeWidth: 0, fontSize: 14, opacity: 0.35 },
   },
 
   pendingBranchChoice: null,
@@ -736,10 +792,43 @@ export const useStore = create<AppState>((set, get) => {
       y: b.y,
       angleDeg: classifyBendAngle(b.angleDeg),
     }));
+    // Auto-klammer/gjengestag: sett inn klammer-markører jevnt fordelt langs hvert nye
+    // segment (kun nye linjer – berører ikke allerede tegnede rør/kanaler), når
+    // innstillingen er slått på og målestokk er satt (avstanden er oppgitt i mm).
+    const clampState = get();
+    const kind = categoryOf(subId)?.kind;
+    const newClamps: ClampEntity[] = [];
+    if (clampState.autoInsertClamps && kind && clampState.scale.metersPerPixel) {
+      const spacingPx = mmToPx(clampState.clampSpacing[kind], clampState.scale.metersPerPixel);
+      if (spacingPx > 0) {
+        for (const line of newLines) {
+          const [x0, y0, x1, y1] = line.points;
+          const segDx = x1 - x0;
+          const segDy = y1 - y0;
+          const lengthPx = Math.hypot(segDx, segDy);
+          const angleDeg = (Math.atan2(segDy, segDx) * 180) / Math.PI;
+          const count = Math.floor(lengthPx / spacingPx);
+          for (let k = 1; k <= count; k++) {
+            const t = (k * spacingPx) / lengthPx;
+            newClamps.push({
+              id: nextId('clamp'),
+              page,
+              lineId: line.id,
+              x: x0 + segDx * t,
+              y: y0 + segDy * t,
+              angleDeg,
+              dimension: finalDimension,
+            });
+          }
+        }
+      }
+    }
+
     const lastLine = newLines[newLines.length - 1];
     set((s) => ({
       lines: [...s.lines, ...newLines],
       bends: [...s.bends, ...newBends],
+      clamps: [...s.clamps, ...newClamps],
       selectedId: lastLine?.id ?? null,
       selectedKind: lastLine ? 'line' : null,
     }));
@@ -891,7 +980,7 @@ export const useStore = create<AppState>((set, get) => {
   addAnnotation: (type, x, y, extra) => {
     recordHistory();
     const cfg = get().annotationConfig[type];
-    const note: AnnotationEntity = {
+    let note: AnnotationEntity = {
       id: nextId('note'),
       page: get().currentPage,
       type,
@@ -899,15 +988,59 @@ export const useStore = create<AppState>((set, get) => {
       y,
       rotation: 0,
       color: cfg.color,
-      ...(type === 'text'
-        ? { text: extra?.text ?? 'Tekst', fontSize: get().annotationConfig.text.fontSize }
-        : {
-            width: extra?.width ?? 160,
-            height: extra?.height ?? 100,
-            strokeWidth: get().annotationConfig.cloud.strokeWidth,
-          }),
-      ...extra,
     };
+    if (type === 'text') {
+      note = { ...note, text: extra?.text ?? 'Tekst', fontSize: cfg.fontSize };
+    } else if (type === 'textbox') {
+      note = {
+        ...note,
+        text: extra?.text ?? 'Tekst',
+        fontSize: cfg.fontSize,
+        width: extra?.width ?? 160,
+        height: extra?.height ?? 60,
+      };
+    } else if (type === 'callout') {
+      // Klikkpunktet er lederens mål-anker; selve meldingsboksen plasseres med en
+      // standard-forskyvning (samme mønster som TagEntity), og kan dras videre av bruker.
+      note = {
+        ...note,
+        x: x + 40,
+        y: y - 40,
+        anchorX: x,
+        anchorY: y,
+        text: extra?.text ?? 'Melding',
+        fontSize: cfg.fontSize,
+        width: extra?.width ?? 160,
+        height: extra?.height ?? 60,
+      };
+    } else if (type === 'cloud' || type === 'rect' || type === 'ellipse') {
+      note = {
+        ...note,
+        width: extra?.width ?? 160,
+        height: extra?.height ?? 100,
+        strokeWidth: cfg.strokeWidth,
+        fill: extra?.fill,
+      };
+    } else if (type === 'highlight') {
+      note = {
+        ...note,
+        width: extra?.width ?? 160,
+        height: extra?.height ?? 60,
+        opacity: cfg.opacity,
+      };
+    } else if (type === 'line' || type === 'arrow' || type === 'polygon') {
+      // Punkt-baserte former lagrer geometrien i `points` (absolutte bildekoordinater,
+      // samme mønster som MeasurementEntity) – x/y på selve entiteten er derfor 0.
+      note = {
+        ...note,
+        x: 0,
+        y: 0,
+        points: extra?.points ?? (type === 'polygon' ? [] : [x, y, x, y]),
+        strokeWidth: cfg.strokeWidth,
+        fill: extra?.fill,
+      };
+    }
+    note = { ...note, ...extra };
     set((s) => ({ annotations: [...s.annotations, note], selectedId: note.id, selectedKind: 'annotation' }));
   },
 
@@ -995,6 +1128,32 @@ export const useStore = create<AppState>((set, get) => {
     }));
   },
 
+  addClamp: (lineId, x, y, angleDeg, dimension) => {
+    recordHistory();
+    const clamp: ClampEntity = {
+      id: nextId('clamp'),
+      page: get().currentPage,
+      lineId,
+      x,
+      y,
+      angleDeg,
+      dimension,
+    };
+    set((s) => ({ clamps: [...s.clamps, clamp], selectedId: clamp.id, selectedKind: 'clamp' }));
+  },
+
+  updateClampPosition: (id, x, y) => {
+    recordHistory();
+    set((s) => ({ clamps: s.clamps.map((c) => (c.id === id ? { ...c, x, y } : c)) }));
+  },
+
+  nudgeClamp: (id, dx, dy, recordAsNewStep) => {
+    if (recordAsNewStep) recordHistory();
+    set((s) => ({
+      clamps: s.clamps.map((c) => (c.id === id ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
+    }));
+  },
+
   addMeasurement: (type, points) => {
     recordHistory();
     const measurement: MeasurementEntity = {
@@ -1035,6 +1194,19 @@ export const useStore = create<AppState>((set, get) => {
       return { standardLengths: next };
     }),
 
+  setAutoInsertClamps: (on) =>
+    set((s) => {
+      persistSettings(s, { autoInsertClamps: on });
+      return { autoInsertClamps: on };
+    }),
+
+  setClampSpacing: (kind, mm) =>
+    set((s) => {
+      const next = { ...s.clampSpacing, [kind]: mm };
+      persistSettings(s, { clampSpacing: next });
+      return { clampSpacing: next };
+    }),
+
   setPipeRenderStyle: (style) =>
     set((s) => {
       persistSettings(s, { pipeRenderStyle: style });
@@ -1068,6 +1240,8 @@ export const useStore = create<AppState>((set, get) => {
       set((s) => ({ annotations: s.annotations.filter((a) => a.id !== selectedId) }));
     } else if (selectedKind === 'tag') {
       set((s) => ({ tags: s.tags.filter((t) => t.id !== selectedId) }));
+    } else if (selectedKind === 'clamp') {
+      set((s) => ({ clamps: s.clamps.filter((c) => c.id !== selectedId) }));
     } else if (selectedKind === 'measurement') {
       set((s) => ({ measurements: s.measurements.filter((m) => m.id !== selectedId) }));
     }
@@ -1084,6 +1258,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: [],
       annotations: [],
       tags: [],
+      clamps: [],
       measurements: [],
       selectedId: null,
       selectedKind: null,
@@ -1108,6 +1283,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: s.bends,
       annotations: s.annotations,
       tags: s.tags,
+      clamps: s.clamps,
       measurements: s.measurements,
     };
     set({
@@ -1131,6 +1307,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: s.bends,
       annotations: s.annotations,
       tags: s.tags,
+      clamps: s.clamps,
       measurements: s.measurements,
     };
     set({
@@ -1172,6 +1349,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: s.bends.filter((b) => !idSet.has(b.id)),
       annotations: s.annotations.filter((a) => !idSet.has(a.id)),
       tags: s.tags.filter((t) => !idSet.has(t.id)),
+      clamps: s.clamps.filter((c) => !idSet.has(c.id)),
       measurements: s.measurements.filter((m) => !idSet.has(m.id)),
       multiSelection: new Set<string>(),
     }));
@@ -1238,6 +1416,7 @@ export const useStore = create<AppState>((set, get) => {
       symbols: st.symbols.map((sy) =>
         sy.mountedLineId && movingIds.has(sy.mountedLineId) ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
       ),
+      clamps: st.clamps.map((c) => (movingIds.has(c.lineId) ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
     }));
   },
 
@@ -1319,6 +1498,18 @@ export const useStore = create<AppState>((set, get) => {
       return null;
     };
 
+    // Påstikk/overganger sitter ofte MIDT PÅ kroppen til den flyttede linjen (ikke i et
+    // endepunkt), så `remap` alene fanger dem ikke – de ville blitt liggende igjen mens
+    // kanalen gled ut under dem. Test derfor (mot linjens GAMLE geometri, før flytting)
+    // om markøren ligger på selve kroppen, innenfor en halv rørbredde + margin, og krev
+    // samme subId/material for å unngå å plukke opp en markør på en parallell nabo-kanal.
+    const halfW = Math.max(mmToPx(dimensionDiameterMm(line.dimension), s.scale.metersPerPixel) / 2, 4);
+    const onBody = (x: number, y: number, subId: string, material: string): boolean => {
+      if (subId !== line.subId || material !== line.material) return false;
+      const cp = closestPointOnPolyline(line.points, { x, y });
+      return cp != null && cp.distance <= halfW;
+    };
+
     set((st) => ({
       lines: st.lines.map((l) => {
         if (l.id === lineId) {
@@ -1351,11 +1542,13 @@ export const useStore = create<AppState>((set, get) => {
       }),
       transitions: st.transitions.map((t) => {
         const r = remap(t.x, t.y);
-        return r ? { ...t, x: r.x, y: r.y } : t;
+        if (r) return { ...t, x: r.x, y: r.y };
+        return onBody(t.x, t.y, t.subId, t.material) ? { ...t, x: t.x + dx, y: t.y + dy } : t;
       }),
       branches: st.branches.map((b) => {
         const r = remap(b.x, b.y);
-        return r ? { ...b, x: r.x, y: r.y } : b;
+        if (r) return { ...b, x: r.x, y: r.y };
+        return onBody(b.x, b.y, b.subId, b.material) ? { ...b, x: b.x + dx, y: b.y + dy } : b;
       }),
       // Tagger og montert utstyr på den flyttede linjen følger med.
       tags: st.tags.map((t) =>
@@ -1364,6 +1557,7 @@ export const useStore = create<AppState>((set, get) => {
       symbols: st.symbols.map((sy) =>
         sy.mountedLineId === lineId ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
       ),
+      clamps: st.clamps.map((c) => (c.lineId === lineId ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
     }));
   },
 
@@ -1398,6 +1592,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: s.bends,
       annotations: s.annotations,
       tags: s.tags,
+      clamps: s.clamps,
       measurements: s.measurements,
       scale: s.scale,
       lineConfig: s.lineConfig,
@@ -1418,6 +1613,7 @@ export const useStore = create<AppState>((set, get) => {
         bends: [],
         annotations: [],
         tags: [],
+        clamps: [],
         measurements: [],
         scale: initialScale,
         autoDetected: null,
@@ -1439,6 +1635,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: snapshot.bends ?? [],
       annotations: snapshot.annotations ?? [],
       tags: snapshot.tags ?? [],
+      clamps: snapshot.clamps ?? [],
       measurements: snapshot.measurements ?? [],
       scale: snapshot.scale,
       lineConfig: snapshot.lineConfig,
@@ -1472,6 +1669,7 @@ export const useStore = create<AppState>((set, get) => {
       bends: [],
       annotations: [],
       tags: [],
+      clamps: [],
       measurements: [],
       tool: 'select',
       selectedId: null,

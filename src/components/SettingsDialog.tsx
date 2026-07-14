@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Trash2, X } from 'lucide-react';
 import { useStore } from '../store';
-import { DUCT_LENGTH_OPTIONS_MM, PIPE_LENGTH_OPTIONS_MM } from '../types';
+import { CLAMP_ROD_LABEL, CLAMP_ROD_LENGTH_MM, DUCT_LENGTH_OPTIONS_MM, PIPE_LENGTH_OPTIONS_MM } from '../types';
 
 export function SettingsDialog() {
   const open = useStore((s) => s.settingsDialogOpen);
@@ -11,6 +11,10 @@ export function SettingsDialog() {
   const setShowAirflowArrows = useStore((s) => s.setShowAirflowArrows);
   const hideComponentLabels = useStore((s) => s.hideComponentLabels);
   const setHideComponentLabels = useStore((s) => s.setHideComponentLabels);
+  const autoInsertClamps = useStore((s) => s.autoInsertClamps);
+  const setAutoInsertClamps = useStore((s) => s.setAutoInsertClamps);
+  const clampSpacing = useStore((s) => s.clampSpacing);
+  const setClampSpacing = useStore((s) => s.setClampSpacing);
   const customSystems = useStore((s) => s.customSystems);
   const addCustomSystem = useStore((s) => s.addCustomSystem);
   const removeCustomSystem = useStore((s) => s.removeCustomSystem);
@@ -95,6 +99,44 @@ export function SettingsDialog() {
               />
               <span>Skjul komponenttekst (overganger, avgreininger)</span>
             </label>
+
+            <label className="field row">
+              <input
+                type="checkbox"
+                checked={autoInsertClamps}
+                onChange={(e) => setAutoInsertClamps(e.target.checked)}
+              />
+              <span>Legg til klammer og gjengestag automatisk på nye kanaler/rør</span>
+            </label>
+            {autoInsertClamps && (
+              <>
+                <p className="note">
+                  Klammer settes inn jevnt fordelt langs nye kanaler/rør du tegner
+                  (allerede tegnede berøres ikke). Hvert klammer regnes med{' '}
+                  {CLAMP_ROD_LENGTH_MM} mm {CLAMP_ROD_LABEL.toLowerCase()}.
+                </p>
+                <div className="field">
+                  <span>Klammeravstand – kanal</span>
+                  <input
+                    type="number"
+                    min={100}
+                    step={100}
+                    value={clampSpacing.duct}
+                    onChange={(e) => setClampSpacing('duct', Number(e.target.value))}
+                  />
+                </div>
+                <div className="field">
+                  <span>Klammeravstand – rør</span>
+                  <input
+                    type="number"
+                    min={100}
+                    step={100}
+                    value={clampSpacing.pipe}
+                    onChange={(e) => setClampSpacing('pipe', Number(e.target.value))}
+                  />
+                </div>
+              </>
+            )}
 
             <div className="field">
               <span>Systemer</span>

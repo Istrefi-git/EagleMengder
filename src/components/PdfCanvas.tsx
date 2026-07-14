@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva';
+import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva';
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
 import { clampScale } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
+  POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
   SYMBOL_DEFS,
+  TEXT_ANNOTATION_TYPES,
+  TEXT_BOX_ANNOTATION_TYPES,
+  annotationTypeLabel,
   branchFittingLabel,
   categoryOf,
   colorFor,
   defaultBranchFittingForPipe,
+  dimensionsForMaterial,
   getBendAngles,
   isDuctSub,
-  mergedDimensions,
   mergedOptions,
   tagLabel,
 } from '../types';
@@ -23,6 +27,7 @@ import type {
   AnnotationType,
   BendEntity,
   BranchEntity,
+  ClampEntity,
   LineEntity,
   MeasurementEntity,
   MeasurementType,
@@ -106,6 +111,9 @@ export function PdfCanvas() {
   const tags = useStore((s) => s.tags);
   const addTag = useStore((s) => s.addTag);
   const updateTagLabel = useStore((s) => s.updateTagLabel);
+  const clamps = useStore((s) => s.clamps);
+  const updateClampPosition = useStore((s) => s.updateClampPosition);
+  const nudgeClamp = useStore((s) => s.nudgeClamp);
   const measurements = useStore((s) => s.measurements);
   const addMeasurement = useStore((s) => s.addMeasurement);
   const areaMeasureMode = useStore((s) => s.areaMeasureMode);
@@ -164,6 +172,14 @@ export function PdfCanvas() {
   const [cloudDraft, setCloudDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
   );
+  // Klikk+dra-definisjon av en boks-basert markup-annotasjon (rektangel, ellipse,
+  // markering/highlight, tekstboks) – samme mønster som cloudDraft.
+  const [boxDraft, setBoxDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // Klikk+dra-definisjon av en linje/pil-annotasjon.
+  const [lineDraft, setLineDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // Fler-klikk-akkumulerte punkter for en polygon-annotasjon (lukkes ved klikk nær
+  // startpunktet eller Enter, samme mønster som areal-målingsverktøyet).
+  const [polygonDraftPoints, setPolygonDraftPoints] = useState<number[]>([]);
   // Id til tekst-annotasjonen som redigeres inline akkurat nå (dobbeltklikk)
   const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null);
   // Forhåndsvisning av hva som skjer hvis man klikker nå (kun rør/kanal-/utstyrsverktøy):
@@ -266,12 +282,16 @@ export function PdfCanvas() {
         setContinuationAnchor(null);
         setCalibPoints([]);
         setMeasureDraftPoints([]);
+        setPolygonDraftPoints([]);
         setTool('select');
       } else if (e.key === 'Enter' && draftPoints.length >= 4 && isLineTool) {
         finishLine();
       } else if (e.key === 'Enter' && measureType === 'area' && measureDraftPoints.length >= 6) {
         addMeasurement('area', measureDraftPoints);
         setMeasureDraftPoints([]);
+      } else if (e.key === 'Enter' && annotationType === 'polygon' && polygonDraftPoints.length >= 6) {
+        addAnnotation('polygon', 0, 0, { points: polygonDraftPoints });
+        setPolygonDraftPoints([]);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (multiSelection.size > 0) deleteMany(Array.from(multiSelection));
         else deleteSelected();
@@ -313,6 +333,18 @@ export function PdfCanvas() {
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
         nudgeTag(selectedId, dx, dy, !e.repeat);
+      } else if (
+        tool === 'select' &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        selectedKind === 'clamp' &&
+        selectedId
+      ) {
+        // Flytter valgt klammer ett skjermpiksel av gangen (Shift for et større hopp).
+        e.preventDefault();
+        const step = (e.shiftKey ? 10 : 1) * invScale;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        nudgeClamp(selectedId, dx, dy, !e.repeat);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -329,9 +361,13 @@ export function PdfCanvas() {
     nudgeSelected,
     moveSingleLine,
     nudgeTag,
+    nudgeClamp,
     measureType,
     measureDraftPoints,
     addMeasurement,
+    annotationType,
+    polygonDraftPoints,
+    addAnnotation,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -392,6 +428,9 @@ export function PdfCanvas() {
     setCursor(null);
     setHoverSnap(null);
     setCloudDraft(null);
+    setBoxDraft(null);
+    setLineDraft(null);
+    setPolygonDraftPoints([]);
     setRectDraft(null);
     setEditingAnnotationId(null);
     setMeasureDraftPoints([]);
@@ -732,8 +771,26 @@ export function PdfCanvas() {
       if (isAnnotationTool && annotationType) {
         if (annotationType === 'text') {
           addAnnotation('text', p.x, p.y);
-        } else {
+        } else if (annotationType === 'callout') {
+          addAnnotation('callout', p.x, p.y);
+        } else if (annotationType === 'polygon') {
+          // Fler-klikk, à la areal-måling: klikk nær startpunktet lukker figuren.
+          const closeToStart =
+            polygonDraftPoints.length >= 6 &&
+            distance(p.x, p.y, polygonDraftPoints[0], polygonDraftPoints[1]) <= 10 * invScale;
+          if (closeToStart) {
+            addAnnotation('polygon', 0, 0, { points: polygonDraftPoints });
+            setPolygonDraftPoints([]);
+          } else {
+            setPolygonDraftPoints((prev) => [...prev, p.x, p.y]);
+          }
+        } else if (annotationType === 'line' || annotationType === 'arrow') {
+          setLineDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        } else if (annotationType === 'cloud') {
           setCloudDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        } else {
+          // rect, ellipse, highlight, textbox: klikk+dra-bounding box.
+          setBoxDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
         }
         return;
       }
@@ -832,6 +889,7 @@ export function PdfCanvas() {
       isAnnotationTool,
       annotationType,
       addAnnotation,
+      polygonDraftPoints,
       isSymbolTool,
       tool,
       lines,
@@ -870,12 +928,33 @@ export function PdfCanvas() {
         if (p) setRectDraft((rd) => (rd ? { ...rd, x1: p.x, y1: p.y } : rd));
         return;
       }
-      if (!isLineTool && !isSymbolTool && tool !== 'calibrate' && !isMeasureTool) {
+      if (boxDraft) {
+        const p = getImagePoint();
+        if (p) setBoxDraft((bd) => (bd ? { ...bd, x1: p.x, y1: p.y } : bd));
+        return;
+      }
+      if (lineDraft) {
+        const p = getImagePoint();
+        if (p) setLineDraft((ld) => (ld ? { ...ld, x1: p.x, y1: p.y } : ld));
+        return;
+      }
+      if (
+        !isLineTool &&
+        !isSymbolTool &&
+        tool !== 'calibrate' &&
+        !isMeasureTool &&
+        annotationType !== 'polygon'
+      ) {
         setHoverSnap((h) => (h ? null : h));
         return;
       }
       const p = getImagePoint();
       if (!p) return;
+      if (annotationType === 'polygon') {
+        // Levende forhåndsvisning av neste segment til lukking (se render lenger ned).
+        setCursor(p);
+        return;
+      }
       if (isMeasureTool) {
         if (measureType === 'area' && areaMeasureMode === 'rect') {
           // Rektangelmodus bruker klikk-og-dra; ingen punkt-snap-indikator.
@@ -933,6 +1012,9 @@ export function PdfCanvas() {
       rubberBand,
       cloudDraft,
       rectDraft,
+      boxDraft,
+      lineDraft,
+      annotationType,
       isLineTool,
       isSymbolTool,
       isMeasureTool,
@@ -961,6 +1043,23 @@ export function PdfCanvas() {
       const h = Math.abs(cloudDraft.y1 - cloudDraft.y0);
       setCloudDraft(null);
       if (w > 8 && h > 8) addAnnotation('cloud', x0, y0, { width: w, height: h });
+      return;
+    }
+    if (boxDraft && annotationType) {
+      const x0 = Math.min(boxDraft.x0, boxDraft.x1);
+      const y0 = Math.min(boxDraft.y0, boxDraft.y1);
+      const w = Math.abs(boxDraft.x1 - boxDraft.x0);
+      const h = Math.abs(boxDraft.y1 - boxDraft.y0);
+      setBoxDraft(null);
+      if (w > 8 && h > 8) addAnnotation(annotationType, x0, y0, { width: w, height: h });
+      return;
+    }
+    if (lineDraft && annotationType) {
+      const { x0, y0, x1, y1 } = lineDraft;
+      setLineDraft(null);
+      if (distance(x0, y0, x1, y1) > 8) {
+        addAnnotation(annotationType, 0, 0, { points: [x0, y0, x1, y1] });
+      }
       return;
     }
     if (rectDraft) {
@@ -1008,6 +1107,18 @@ export function PdfCanvas() {
     );
     const annotationHits = annotations.filter((a) => {
       if (a.page !== currentPage) return false;
+      if (a.points && a.points.length >= 2) {
+        // Punkt-baserte former (linje/pil/polygon) – bbox over punktene, samme mønster
+        // som measurementHits under.
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i + 1 < a.points.length; i += 2) {
+          minX = Math.min(minX, a.points[i]);
+          maxX = Math.max(maxX, a.points[i]);
+          minY = Math.min(minY, a.points[i + 1]);
+          maxY = Math.max(maxY, a.points[i + 1]);
+        }
+        return minX <= x1 && maxX >= x0 && minY <= y1 && maxY >= y0;
+      }
       const aw = a.width ?? 0;
       const ah = a.height ?? 0;
       return a.x <= x1 && a.x + aw >= x0 && a.y <= y1 && a.y + ah >= y0;
@@ -1026,6 +1137,9 @@ export function PdfCanvas() {
     );
     const tagHits = tags.filter(
       (t) => t.page === currentPage && t.labelX >= x0 && t.labelX <= x1 && t.labelY >= y0 && t.labelY <= y1,
+    );
+    const clampHits = clamps.filter(
+      (c) => c.page === currentPage && c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1,
     );
     const measurementHits = measurements.filter((m) => {
       if (m.page !== currentPage) return false;
@@ -1047,11 +1161,15 @@ export function PdfCanvas() {
       ...transitionHits.map((t) => t.id),
       ...bendHits.map((b) => b.id),
       ...tagHits.map((t) => t.id),
+      ...clampHits.map((c) => c.id),
       ...measurementHits.map((m) => m.id),
     ]);
   }, [
     rubberBand,
     cloudDraft,
+    boxDraft,
+    lineDraft,
+    annotationType,
     rectDraft,
     addAnnotation,
     addMeasurement,
@@ -1062,6 +1180,7 @@ export function PdfCanvas() {
     transitions,
     bends,
     tags,
+    clamps,
     measurements,
     currentPage,
     hiddenCategories,
@@ -1154,6 +1273,7 @@ export function PdfCanvas() {
   const pageAnnotations = annotations.filter((a) => a.page === currentPage);
   const editingAnnotation = annotations.find((a) => a.id === editingAnnotationId) ?? null;
   const pageTags = tags.filter((t) => t.page === currentPage && !isSubHidden(lines.find((l) => l.id === t.lineId)?.subId ?? ''));
+  const pageClamps = clamps.filter((c) => c.page === currentPage && !isSubHidden(lines.find((l) => l.id === c.lineId)?.subId ?? ''));
   const pageMeasurements = measurements.filter((m) => m.page === currentPage);
   const measureDraftPreview =
     isMeasureTool && measureDraftPoints.length > 0
@@ -1187,7 +1307,7 @@ export function PdfCanvas() {
             onChange={(e) => changeDraftDimension(e.target.value)}
             title="Bytt dimensjon (legger til en synlig overgang hvis du allerede har tegnet)"
           >
-            {mergedDimensions(activeSub, customDimensions).map((d) => (
+            {dimensionsForMaterial(activeSub, activeMaterial, customDimensions).map((d) => (
               <option key={d} value={d}>
                 {d}
               </option>
@@ -1331,7 +1451,7 @@ export function PdfCanvas() {
 
       {isAnnotationTool && annotationType && (
         <div className="draw-hud annotation-hud">
-          <span className="draw-hud-label">{annotationType === 'text' ? 'Tekst' : 'Sky'}</span>
+          <span className="draw-hud-label">{annotationTypeLabel(annotationType)}</span>
           <label className="annotation-hud-color">
             <input
               type="color"
@@ -1340,15 +1460,27 @@ export function PdfCanvas() {
               title="Farge"
             />
           </label>
-          {annotationType === 'text' ? (
+          {TEXT_ANNOTATION_TYPES.has(annotationType) ? (
             <label className="annotation-hud-number">
               <span>Skriftstørrelse</span>
               <input
                 type="number"
                 min={8}
                 max={48}
-                value={annotationConfig.text.fontSize}
-                onChange={(e) => setAnnotationConfig('text', { fontSize: Number(e.target.value) })}
+                value={annotationConfig[annotationType].fontSize}
+                onChange={(e) => setAnnotationConfig(annotationType, { fontSize: Number(e.target.value) })}
+              />
+            </label>
+          ) : annotationType === 'highlight' ? (
+            <label className="annotation-hud-number">
+              <span>Styrke</span>
+              <input
+                type="range"
+                min={0.1}
+                max={0.8}
+                step={0.05}
+                value={annotationConfig.highlight.opacity}
+                onChange={(e) => setAnnotationConfig('highlight', { opacity: Number(e.target.value) })}
               />
             </label>
           ) : (
@@ -1358,8 +1490,8 @@ export function PdfCanvas() {
                 type="number"
                 min={1}
                 max={8}
-                value={annotationConfig.cloud.strokeWidth}
-                onChange={(e) => setAnnotationConfig('cloud', { strokeWidth: Number(e.target.value) })}
+                value={annotationConfig[annotationType].strokeWidth}
+                onChange={(e) => setAnnotationConfig(annotationType, { strokeWidth: Number(e.target.value) })}
               />
             </label>
           )}
@@ -1475,6 +1607,13 @@ export function PdfCanvas() {
                 nodeScale={symbolRenderScale(sym, lines, scale.metersPerPixel, invScale)}
                 showAirflowArrows={showAirflowArrows}
                 editable={tool === 'select'}
+                color={
+                  sym.type === 'supply_diffuser'
+                    ? colorFor(SUBCATEGORIES['36.tilluft'], customColors)
+                    : sym.type === 'extract_diffuser'
+                      ? colorFor(SUBCATEGORIES['36.avtrekk'], customColors)
+                      : undefined
+                }
                 onSelect={() => select(sym.id, 'symbol')}
                 onChange={(x, y) => updateSymbol(sym.id, { x, y })}
                 onHover={(hovering) => setHoveredSymbol(hovering ? sym.id : null)}
@@ -1520,7 +1659,7 @@ export function PdfCanvas() {
               invScale={invScale}
               editable={tool === 'select'}
               onSelect={() => select(note.id, 'annotation')}
-              onChange={(x, y) => updateAnnotation(note.id, { x, y })}
+              onChange={(patch) => updateAnnotation(note.id, patch)}
               onEditText={() => setEditingAnnotationId(note.id)}
             />
           ))}
@@ -1542,6 +1681,17 @@ export function PdfCanvas() {
               />
             );
           })}
+          {pageClamps.map((c) => (
+            <ClampMarker
+              key={c.id}
+              clamp={c}
+              invScale={invScale}
+              selected={c.id === selectedId || multiSelection.has(c.id)}
+              interactive={tool === 'select'}
+              onSelect={() => select(c.id, 'clamp')}
+              onChange={(x, y) => updateClampPosition(c.id, x, y)}
+            />
+          ))}
           {pageMeasurements.map((m) => (
             <MeasurementNode
               key={m.id}
@@ -1632,6 +1782,34 @@ export function PdfCanvas() {
               dash={[6 * invScale, 4 * invScale]}
             />
           )}
+          {boxDraft && annotationType && (
+            <Rect
+              x={Math.min(boxDraft.x0, boxDraft.x1)}
+              y={Math.min(boxDraft.y0, boxDraft.y1)}
+              width={Math.abs(boxDraft.x1 - boxDraft.x0)}
+              height={Math.abs(boxDraft.y1 - boxDraft.y0)}
+              stroke={annotationConfig[annotationType].color}
+              strokeWidth={1.5 * invScale}
+              dash={[6 * invScale, 4 * invScale]}
+            />
+          )}
+          {lineDraft && annotationType && (
+            <Line
+              points={[lineDraft.x0, lineDraft.y0, lineDraft.x1, lineDraft.y1]}
+              stroke={annotationConfig[annotationType].color}
+              strokeWidth={2 * invScale}
+              dash={[6 * invScale, 4 * invScale]}
+            />
+          )}
+          {annotationType === 'polygon' && polygonDraftPoints.length >= 2 && (
+            <Line
+              points={cursor ? [...polygonDraftPoints, cursor.x, cursor.y] : polygonDraftPoints}
+              stroke={annotationConfig.polygon.color}
+              strokeWidth={1.5 * invScale}
+              dash={[6 * invScale, 4 * invScale]}
+              closed={polygonDraftPoints.length >= 6}
+            />
+          )}
           {draftPreview.length >= 4 && activeSubId && (
             <Line
               points={draftPreview}
@@ -1708,6 +1886,8 @@ export function PdfCanvas() {
             top: editingAnnotation.y * view.scale + view.y,
             fontSize: (editingAnnotation.fontSize ?? 14) * view.scale,
             color: editingAnnotation.color,
+            width: editingAnnotation.width ? editingAnnotation.width * view.scale : undefined,
+            height: editingAnnotation.height ? editingAnnotation.height * view.scale : undefined,
           }}
           defaultValue={editingAnnotation.text ?? ''}
           onFocus={(e) => e.currentTarget.select()}
@@ -2130,13 +2310,64 @@ function BendMarker({
   );
 }
 
+// ── Klammer-markør (bæring for rør/kanal, med tilhørende gjengestag) ────────
+/** Tegnes som en liten tverrgående bøyle/stropp på tvers av rør-/kanalretningen –
+ * `clamp.angleDeg` er retningen LANGS bæreren (samme mønster som BranchEntity),
+ * så selve glyph-en tegnes loddrett i lokale koordinater og roteres til å stå på
+ * tvers av retningen når Gruppen roteres. Kan flyttes (dra, eller piltaster når
+ * valgt) og slettes som enhver annen markør. */
+function ClampMarker({
+  clamp,
+  invScale,
+  selected,
+  interactive,
+  onSelect,
+  onChange,
+}: {
+  clamp: ClampEntity;
+  invScale: number;
+  selected: boolean;
+  interactive: boolean;
+  onSelect: () => void;
+  onChange: (x: number, y: number) => void;
+}) {
+  const color = selected ? '#f5a623' : '#6d4c41';
+  const half = 9 * invScale;
+  return (
+    <Group
+      x={clamp.x}
+      y={clamp.y}
+      rotation={clamp.angleDeg}
+      draggable={interactive && selected}
+      onMouseDown={(e) => {
+        if (!interactive) return;
+        e.cancelBubble = true;
+        onSelect();
+      }}
+      onDragEnd={(e) => onChange(e.target.x(), e.target.y())}
+    >
+      {selected && <Circle radius={half + 5 * invScale} stroke="#f5a623" strokeWidth={2 * invScale} listening={false} />}
+      {/* Bøyle på tvers av rør-/kanalretningen, med to «boltehull»-prikker i endene. */}
+      <Line points={[0, -half, 0, half]} stroke={color} strokeWidth={2.5 * invScale} listening={false} />
+      <Circle x={0} y={-half} radius={1.6 * invScale} fill={color} listening={false} />
+      <Circle x={0} y={half} radius={1.6 * invScale} fill={color} listening={false} />
+      <Circle
+        radius={Math.max(half + 4 * invScale, 12 * invScale)}
+        opacity={0}
+        listening={interactive}
+      />
+    </Group>
+  );
+}
+
 // ── Symbol-node ─────────────────────────────────────────────────────────────
 interface SymbolNodeProps {
   sym: SymbolEntity;
   selected: boolean;
-  nodeScale: number;
+  nodeScale: { scaleX: number; scaleY: number };
   showAirflowArrows: boolean;
   editable: boolean;
+  color?: string;
   onSelect: () => void;
   onChange: (x: number, y: number) => void;
   onHover: (hovering: boolean) => void;
@@ -2156,27 +2387,43 @@ const DIFFUSER_SIZE_MM = 600;
  * sterk utzooming eller svært tynne rør/kanaler. */
 const SYMBOL_MIN_SCREEN_PX = 12;
 
-/** Beregner den endelige skaleringen for et utstyrssymbol. Symboler tegnes i
- * verdenskoordinater slik at de matcher den faktiske pikselbredden til
- * røret/kanalen de er montert i (eller eget dimensjonsfelt) – da holder de seg
- * proporsjonale med tegningen ved zoom, i stedet for å ha fast skjermstørrelse.
- * En nedre grense hindrer at symbolet blir uleselig lite. Faller tilbake til en
- * fast lesbar skjermstørrelse når verken dimensjon eller målestokk er tilgjengelig. */
+/** Aggregat-glyphens nominelle bredde/høyde i lokale enheter (se AhuGlyph). */
+const AHU_GLYPH_UNITS = SYMBOL_GLYPH_UNITS;
+
+/** Beregner den endelige skaleringen for et utstyrssymbol som `{ scaleX, scaleY }`.
+ * De fleste symboler skaleres uniformt (scaleX===scaleY) etter kanaldimensjonen de
+ * er montert på, eller eget dimensjonsfelt. Ventilasjonsaggregat skaleres derimot
+ * ikke-uniformt etter oppgitt bredde × lengde. Symboler tegnes i verdenskoordinater
+ * slik at de holder seg proporsjonale med tegningen ved zoom. En nedre grense hindrer
+ * at symbolet blir uleselig lite; faller tilbake til en fast skjermstørrelse når verken
+ * dimensjon eller målestokk er tilgjengelig. */
 function symbolRenderScale(
   sym: SymbolEntity,
   lines: LineEntity[],
   metersPerPixel: number | null,
   invScale: number,
-): number {
+): { scaleX: number; scaleY: number } {
+  const uniform = (s: number) => ({ scaleX: s, scaleY: s });
+  // Ventilasjonsaggregat: ikke-uniform, skalert til oppgitt bredde × lengde (mm).
+  if (sym.type === 'air_handling_unit') {
+    if (metersPerPixel) {
+      const widthMm = Number(sym.props.width) || 2000;
+      const lengthMm = Number(sym.props.length) || 1200;
+      const wPx = Math.max(mmToPx(widthMm, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
+      const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
+      return { scaleX: wPx / AHU_GLYPH_UNITS, scaleY: lPx / AHU_GLYPH_UNITS };
+    }
+    return uniform(invScale);
+  }
   // Tilluft-/avtrekksventiler har fast fysisk størrelse (600×600 mm), uavhengig
   // av kanaldimensjonen de er montert på. Diffusor-glyph-ens ytre kvadrat
   // (DIFFUSER_GLYPH_UNITS lokale enheter) skaleres til 600 mm i verdenspiksler.
   if (sym.type === 'supply_diffuser' || sym.type === 'extract_diffuser') {
     if (metersPerPixel) {
       const sidePx = Math.max(mmToPx(DIFFUSER_SIZE_MM, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
-      return sidePx / DIFFUSER_GLYPH_UNITS;
+      return uniform(sidePx / DIFFUSER_GLYPH_UNITS);
     }
-    return invScale;
+    return uniform(invScale);
   }
   let dimMm: number | null = null;
   if (sym.mountedLineId) {
@@ -2193,10 +2440,10 @@ function symbolRenderScale(
     // mål-bredden i verdenspiksler; nedre grense = min. lesbar skjermstørrelse
     // (SYMBOL_MIN_SCREEN_PX px ⇒ SYMBOL_MIN_SCREEN_PX·invScale verdenspiksler).
     const targetPx = Math.max(diameterPx, SYMBOL_MIN_SCREEN_PX * invScale);
-    return targetPx / SYMBOL_GLYPH_UNITS;
+    return uniform(targetPx / SYMBOL_GLYPH_UNITS);
   }
   // Ingen målestokk/dimensjon: fast lesbar skjermstørrelse.
-  return invScale;
+  return uniform(invScale);
 }
 
 function SymbolNode({
@@ -2205,6 +2452,7 @@ function SymbolNode({
   nodeScale,
   showAirflowArrows,
   editable,
+  color,
   onSelect,
   onChange,
   onHover,
@@ -2214,8 +2462,8 @@ function SymbolNode({
       x={sym.x}
       y={sym.y}
       rotation={sym.rotation}
-      scaleX={nodeScale}
-      scaleY={nodeScale}
+      scaleX={nodeScale.scaleX}
+      scaleY={nodeScale.scaleY}
       draggable={editable && selected}
       onMouseDown={(e) => {
         if (!editable) return;
@@ -2232,7 +2480,7 @@ function SymbolNode({
       onMouseLeave={() => onHover(false)}
       onDragEnd={(e) => onChange(e.target.x(), e.target.y())}
     >
-      <SymbolGlyph type={sym.type} selected={selected} showArrows={showAirflowArrows} />
+      <SymbolGlyph type={sym.type} selected={selected} showArrows={showAirflowArrows} color={color} />
     </Group>
   );
 }
@@ -2256,20 +2504,48 @@ function midpoint(points: number[]): { x: number; y: number } | null {
   return { x: points[0], y: points[1] };
 }
 
-// ── Annotasjon (tekst/sky) ───────────────────────────────────────────────────
+// ── Annotasjon (tekst/tekstboks/melding/sky/former/marker) ──────────────────
 interface AnnotationNodeProps {
   note: AnnotationEntity;
   selected: boolean;
   invScale: number;
   editable: boolean;
   onSelect: () => void;
-  onChange: (x: number, y: number) => void;
+  onChange: (patch: Partial<AnnotationEntity>) => void;
   onEditText: () => void;
 }
 
 function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange, onEditText }: AnnotationNodeProps) {
   const w = note.width ?? 160;
   const h = note.height ?? 100;
+  const isPointBased = POINT_ANNOTATION_TYPES.has(note.type);
+  const points = note.points ?? [];
+
+  // Utvalgs-omriss: bounding box rundt selve formen, i lokale (gruppe-relative)
+  // koordinater. Punkt-baserte former (linje/pil/polygon) beregner sin egen bbox
+  // fra punktene, siden de ikke har en fast bredde/høyde.
+  let outline = { x: -6 * invScale, y: -6 * invScale, w: w + 12 * invScale, h: h + 12 * invScale };
+  if (note.type === 'text') {
+    outline = {
+      x: -6 * invScale,
+      y: -6 * invScale,
+      w: (note.text?.length ?? 4) * (note.fontSize ?? 14) * 0.6 + 12 * invScale,
+      h: (note.fontSize ?? 14) + 12 * invScale,
+    };
+  } else if (isPointBased && points.length >= 4) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i + 1 < points.length; i += 2) {
+      minX = Math.min(minX, points[i]);
+      maxX = Math.max(maxX, points[i]);
+      minY = Math.min(minY, points[i + 1]);
+      maxY = Math.max(maxY, points[i + 1]);
+    }
+    outline = { x: minX - 6 * invScale, y: minY - 6 * invScale, w: maxX - minX + 12 * invScale, h: maxY - minY + 12 * invScale };
+  }
+
+  const strokeWidth = note.strokeWidth ?? 2;
+  const hitStrokeWidth = Math.max(strokeWidth * invScale, 12 * invScale);
+
   return (
     <Group
       x={note.x}
@@ -2283,29 +2559,124 @@ function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange
       onDblClick={(e) => {
         if (!editable) return;
         e.cancelBubble = true;
-        if (note.type === 'text') onEditText();
+        if (note.type === 'text' || TEXT_BOX_ANNOTATION_TYPES.has(note.type)) onEditText();
       }}
-      onDragEnd={(e) => onChange(e.target.x(), e.target.y())}
+      onDragEnd={(e) => {
+        const node = e.target;
+        if (isPointBased) {
+          // Punkt-baserte former lagrer geometri absolutt i `points` (x/y er alltid 0) –
+          // flytt punktene med drag-forskyvningen og nullstill node-posisjonen, samme
+          // mønster som linjekroppens dra-håndtering (LineNode).
+          const dx = node.x();
+          const dy = node.y();
+          node.position({ x: 0, y: 0 });
+          onChange({ points: (note.points ?? []).map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) });
+        } else {
+          onChange({ x: node.x(), y: node.y() });
+        }
+      }}
     >
-      {note.type === 'text' ? (
+      {note.type === 'text' && (
         <Text
           text={note.text ?? ''}
           fontSize={(note.fontSize ?? 14) * invScale}
           fill={note.color}
           fontStyle={selected ? 'bold' : 'normal'}
         />
-      ) : (
+      )}
+      {note.type === 'cloud' && (
         <>
           <Rect width={w} height={h} opacity={0} listening={editable} />
-          <CloudShape width={w} height={h} color={note.color} strokeWidth={note.strokeWidth ?? 2} invScale={invScale} />
+          <CloudShape width={w} height={h} color={note.color} strokeWidth={strokeWidth} invScale={invScale} />
         </>
+      )}
+      {(note.type === 'rect' || note.type === 'ellipse') && (
+        <>
+          <Rect width={w} height={h} opacity={0} listening={editable} />
+          {note.type === 'rect' ? (
+            <Rect
+              width={w}
+              height={h}
+              stroke={note.color}
+              strokeWidth={strokeWidth * invScale}
+              fill={note.fill}
+              listening={false}
+            />
+          ) : (
+            <Ellipse
+              x={w / 2}
+              y={h / 2}
+              radiusX={w / 2}
+              radiusY={h / 2}
+              stroke={note.color}
+              strokeWidth={strokeWidth * invScale}
+              fill={note.fill}
+              listening={false}
+            />
+          )}
+        </>
+      )}
+      {note.type === 'highlight' && (
+        <Rect
+          width={w}
+          height={h}
+          fill={note.color}
+          opacity={note.opacity ?? 0.35}
+          listening={editable}
+        />
+      )}
+      {TEXT_BOX_ANNOTATION_TYPES.has(note.type) && (
+        <>
+          {note.type === 'callout' && note.anchorX != null && note.anchorY != null && (
+            <Line
+              points={[note.anchorX - note.x, note.anchorY - note.y, w / 2, h / 2]}
+              stroke={note.color}
+              strokeWidth={1.5 * invScale}
+              listening={false}
+            />
+          )}
+          <Rect width={w} height={h} stroke={note.color} strokeWidth={1.5 * invScale} fill="#fff" listening={editable} />
+          <Text
+            text={note.text ?? ''}
+            x={6 * invScale}
+            y={6 * invScale}
+            width={w - 12 * invScale}
+            fontSize={(note.fontSize ?? 14) * invScale}
+            fill={note.color}
+            listening={false}
+          />
+        </>
+      )}
+      {note.type === 'line' && (
+        <Line points={points} stroke={note.color} strokeWidth={strokeWidth * invScale} hitStrokeWidth={hitStrokeWidth} lineCap="round" />
+      )}
+      {note.type === 'arrow' && (
+        <Arrow
+          points={points}
+          stroke={note.color}
+          fill={note.color}
+          strokeWidth={strokeWidth * invScale}
+          hitStrokeWidth={hitStrokeWidth}
+          pointerLength={10 * invScale}
+          pointerWidth={9 * invScale}
+        />
+      )}
+      {note.type === 'polygon' && (
+        <Line
+          points={points}
+          stroke={note.color}
+          strokeWidth={strokeWidth * invScale}
+          closed
+          fill={note.fill}
+          hitStrokeWidth={hitStrokeWidth}
+        />
       )}
       {selected && (
         <Rect
-          x={-6 * invScale}
-          y={-6 * invScale}
-          width={(note.type === 'text' ? (note.text?.length ?? 4) * (note.fontSize ?? 14) * 0.6 : w) + 12 * invScale}
-          height={(note.type === 'text' ? (note.fontSize ?? 14) : h) + 12 * invScale}
+          x={outline.x}
+          y={outline.y}
+          width={outline.w}
+          height={outline.h}
           stroke="#f5a623"
           strokeWidth={1.5 * invScale}
           dash={[4 * invScale, 3 * invScale]}

@@ -60,11 +60,12 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const transitions = useStore((s) => s.transitions);
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
+  const clamps = useStore((s) => s.clamps);
   const standardLengths = useStore((s) => s.standardLengths);
   const hasData = lines.length > 0 || symbols.length > 0;
 
   function exportExcel() {
-    const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends);
+    const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
     downloadQuantityExcel(report, tilbudName);
   }
 
