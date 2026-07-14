@@ -316,7 +316,7 @@ export interface DuctRunWalls {
 }
 
 /** Finner skjæringspunktet mellom to uendelige linjer p1+t*d1 og p2+s*d2 (null hvis parallelle). */
-function lineIntersect(
+export function lineIntersect(
   p1: { x: number; y: number },
   d1: { x: number; y: number },
   p2: { x: number; y: number },

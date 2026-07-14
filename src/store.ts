@@ -26,7 +26,7 @@ import {
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
-import { classifyBendAngle, polylineBendAngles } from './lib/geometry';
+import { classifyBendAngle, lineIntersect, polylineBendAngles } from './lib/geometry';
 
 let idCounter = 0;
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${idCounter++}`;
@@ -1247,40 +1247,116 @@ export const useStore = create<AppState>((set, get) => {
     if (!line) return;
     if (recordAsNewStep) recordHistory();
 
-    // De to (gamle) endepunktene til linjen som flyttes. Naboer som deler et av disse
-    // punktene skal strekkes: kun det delte endepunktet følger med, den andre enden står.
+    const pageLines = s.lines.filter((l) => l.page === line.page);
+    const eps = 0.5;
+    const near = (ax: number, ay: number, bx: number, by: number) =>
+      Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
+
+    // Retningen til linjen som flyttes (ende-til-ende). Etter flytting skal L beholde
+    // denne retningen (L-ny-linje = L translatert med (dx,dy)), slik at vinkelen mot
+    // naboene ikke endres.
     const n = line.points.length;
+    const dirL = { x: line.points[n - 2] - line.points[0], y: line.points[n - 1] - line.points[1] };
     const oldEndpoints = [
       { x: line.points[0], y: line.points[1] },
       { x: line.points[n - 2], y: line.points[n - 1] },
     ];
-    const eps = 0.5;
-    const atOldEndpoint = (x: number, y: number) =>
-      oldEndpoints.some((p) => Math.abs(p.x - x) < eps && Math.abs(p.y - y) < eps);
+
+    // For hvert endepunkt E på L: beregn hvor E havner (newEndpoint), og hvilke
+    // nabo-vertekser som skal flyttes dit. Naboer beholder sin egen retning – kun deres
+    // delte skjøt følger med – slik at bend-vinklene bevares nøyaktig.
+    const newEndpoint = oldEndpoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    const neighborMoves: { lineId: string; vertexIndex: number; x: number; y: number }[] = [];
+
+    oldEndpoints.forEach((E, k) => {
+      const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
+      for (const other of pageLines) {
+        if (other.id === lineId) continue;
+        const on = other.points.length;
+        for (const i of [0, on - 2]) {
+          if (near(other.points[i], other.points[i + 1], E.x, E.y)) {
+            neighbors.push({ line: other, vertexIndex: i });
+          }
+        }
+      }
+
+      if (neighbors.length === 1) {
+        const nb = neighbors[0];
+        const nn = nb.line.points.length;
+        // Naboens faste fjern-ende (motsatt av skjøten) og dens opprinnelige retning.
+        const sharedIsStart = nb.vertexIndex === 0;
+        const farX = sharedIsStart ? nb.line.points[nn - 2] : nb.line.points[0];
+        const farY = sharedIsStart ? nb.line.points[nn - 1] : nb.line.points[1];
+        const dirN = { x: E.x - farX, y: E.y - farY };
+        // Nytt skjøtpunkt = skjæring mellom L-ny-linje og naboens faste linje.
+        const hit = lineIntersect({ x: E.x + dx, y: E.y + dy }, dirL, { x: farX, y: farY }, dirN);
+        const target = hit ?? { x: E.x + dx, y: E.y + dy }; // fallback: parallell/kolineær → strekk
+        newEndpoint[k] = target;
+        neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: target.x, y: target.y });
+      } else if (neighbors.length >= 2) {
+        // T-rør/forgrening: bevar ikke vinkel – flytt skjøten og dra alle naboer dit.
+        for (const nb of neighbors) {
+          neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: E.x + dx, y: E.y + dy });
+        }
+        newEndpoint[k] = { x: E.x + dx, y: E.y + dy };
+      }
+      // neighbors.length === 0 → fri ende: newEndpoint[k] er allerede E+(dx,dy).
+    });
+
+    const movesByLine = new Map<string, { vertexIndex: number; x: number; y: number }[]>();
+    for (const m of neighborMoves) {
+      const arr = movesByLine.get(m.lineId) ?? [];
+      arr.push({ vertexIndex: m.vertexIndex, x: m.x, y: m.y });
+      movesByLine.set(m.lineId, arr);
+    }
+
+    // Hvor havner et gammelt skjøtpunkt? Brukt for å flytte markører til det NYE
+    // skjøtpunktet (ikke bare med (dx,dy)), slik at de blir liggende riktig.
+    const remap = (x: number, y: number): { x: number; y: number } | null => {
+      for (let k = 0; k < oldEndpoints.length; k++) {
+        if (near(oldEndpoints[k].x, oldEndpoints[k].y, x, y)) return newEndpoint[k];
+      }
+      return null;
+    };
 
     set((st) => ({
       lines: st.lines.map((l) => {
         if (l.id === lineId) {
-          // Selve den valgte linjen flyttes rigid.
-          return { ...l, points: l.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) };
-        }
-        if (l.page !== line.page) return l;
-        // Naboer: flytt kun de vertex-ene som sammenfaller med et gammelt endepunkt.
-        let changed = false;
-        const next = [...l.points];
-        for (let i = 0; i + 1 < next.length; i += 2) {
-          if (atOldEndpoint(next[i], next[i + 1])) {
-            next[i] += dx;
-            next[i + 1] += dy;
-            changed = true;
+          // Endepunktene settes til newEndpoint (skjæring eller translatert) – begge ligger
+          // på L-ny-linje, så L beholder retningen. Ev. indre punkter translateres.
+          const pts = [...l.points];
+          pts[0] = newEndpoint[0].x;
+          pts[1] = newEndpoint[0].y;
+          pts[pts.length - 2] = newEndpoint[1].x;
+          pts[pts.length - 1] = newEndpoint[1].y;
+          for (let i = 2; i + 1 < pts.length - 2; i += 2) {
+            pts[i] += dx;
+            pts[i + 1] += dy;
           }
+          return { ...l, points: pts };
         }
-        return changed ? { ...l, points: next } : l;
+        const moves = movesByLine.get(l.id);
+        if (!moves) return l;
+        const pts = [...l.points];
+        for (const mv of moves) {
+          pts[mv.vertexIndex] = mv.x;
+          pts[mv.vertexIndex + 1] = mv.y;
+        }
+        return { ...l, points: pts };
       }),
-      // Skjøt-markører som satt på de flyttede endepunktene følger med.
-      bends: st.bends.map((b) => (atOldEndpoint(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
-      transitions: st.transitions.map((t) => (atOldEndpoint(t.x, t.y) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
-      branches: st.branches.map((b) => (atOldEndpoint(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+      // Skjøt-markører flyttes til det nye skjøtpunktet (vinkel bevart ⇒ angleDeg gyldig).
+      bends: st.bends.map((b) => {
+        const r = remap(b.x, b.y);
+        return r ? { ...b, x: r.x, y: r.y } : b;
+      }),
+      transitions: st.transitions.map((t) => {
+        const r = remap(t.x, t.y);
+        return r ? { ...t, x: r.x, y: r.y } : t;
+      }),
+      branches: st.branches.map((b) => {
+        const r = remap(b.x, b.y);
+        return r ? { ...b, x: r.x, y: r.y } : b;
+      }),
       // Tagger og montert utstyr på den flyttede linjen følger med.
       tags: st.tags.map((t) =>
         t.lineId === lineId ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy } : t,

@@ -616,9 +616,12 @@ export function PdfCanvas() {
    * legger IKKE til punkter på det gamle segmentet – det starter bare en ny, tilstøtende
    * tegnesesjon fra samme koordinat, akkurat som når man begynner et helt nytt strekk.
    * Det andre endepunktet lagres som continuationAnchor slik at vinkelsnapping og en
-   * ev. bend-markør i skjøtepunktet beregnes riktig mot det eksisterende røret. */
+   * ev. bend-markør i skjøtepunktet beregnes riktig mot det eksisterende røret.
+   * Er `targetDimension` satt og forskjellig fra det eksisterende rørets dimensjon,
+   * settes en overgang automatisk inn i skjøtpunktet og den nye tegningen fortsetter
+   * på det nye målet (jf. «fortsett med en annen dimensjon»). */
   const seedContinuation = useCallback(
-    (line: LineEntity, fromStart: boolean) => {
+    (line: LineEntity, fromStart: boolean, targetDimension?: string) => {
       preserveDraftRef.current = true;
       setLineSelection(line.subId, line.material, line.dimension);
       const n = line.points.length;
@@ -626,9 +629,16 @@ export function PdfCanvas() {
       const other = fromStart ? [line.points[n - 2], line.points[n - 1]] : [line.points[0], line.points[1]];
       setDraftPoints(shared);
       setContinuationAnchor({ x: other[0], y: other[1] });
-      setDraftDimension(line.dimension);
+      if (targetDimension && targetDimension !== line.dimension) {
+        // Fortsett med et annet mål: legg inn overgang i skjøten og bruk det nye målet.
+        addTransition(line.subId, line.material, line.dimension, targetDimension, shared[0], shared[1]);
+        setDraftDimension(targetDimension);
+        updateLineConfigDimension(line.subId, targetDimension);
+      } else {
+        setDraftDimension(line.dimension);
+      }
     },
-    [setLineSelection],
+    [setLineSelection, addTransition, updateLineConfigDimension],
   );
 
   const getImagePoint = useCallback((): { x: number; y: number } | null => {
@@ -706,7 +716,9 @@ export function PdfCanvas() {
             );
             const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
             if (endpointHit && target.line.subId === activeSubId) {
-              seedContinuation(target.line, endpointHit === 'start');
+              // Fortsett fra endepunktet. Har brukeren valgt et annet mål enn det
+              // eksisterende røret, settes en overgang inn i skjøten automatisk.
+              seedContinuation(target.line, endpointHit === 'start', draftDimension ?? undefined);
               setShowShiftTip(false);
               return;
             }
@@ -1475,6 +1487,7 @@ export function PdfCanvas() {
               invScale={invScale}
               selected={t.id === selectedId || multiSelection.has(t.id)}
               hideLabel={hideComponentLabels}
+              interactive={tool === 'select'}
               onSelect={() => select(t.id, 'transition')}
             />
           ))}
@@ -1485,6 +1498,7 @@ export function PdfCanvas() {
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
               hideLabel={hideComponentLabels}
+              interactive={tool === 'select'}
               onSelect={() => select(b.id, 'branch')}
             />
           ))}
@@ -1494,6 +1508,7 @@ export function PdfCanvas() {
               bend={b}
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
+              interactive={tool === 'select'}
               onSelect={() => select(b.id, 'bend')}
             />
           ))}
@@ -1534,6 +1549,7 @@ export function PdfCanvas() {
               metersPerPixel={scale.metersPerPixel}
               selected={m.id === selectedId || multiSelection.has(m.id)}
               invScale={invScale}
+              interactive={tool === 'select'}
               onSelect={() => select(m.id, 'measurement')}
             />
           ))}
@@ -1969,12 +1985,14 @@ function TransitionMarker({
   invScale,
   selected,
   hideLabel,
+  interactive,
   onSelect,
 }: {
   transition: { x: number; y: number; fromDimension: string; toDimension: string };
   invScale: number;
   selected: boolean;
   hideLabel: boolean;
+  interactive: boolean;
   onSelect: () => void;
 }) {
   const r = 7 * invScale;
@@ -2003,6 +2021,7 @@ function TransitionMarker({
       <Circle
         radius={Math.max(r + 6 * invScale, 14 * invScale)}
         opacity={0}
+        listening={interactive}
         onMouseDown={(e) => {
           e.cancelBubble = true;
           onSelect();
@@ -2018,12 +2037,14 @@ function BranchMarker({
   invScale,
   selected,
   hideLabel,
+  interactive,
   onSelect,
 }: {
   branch: BranchEntity;
   invScale: number;
   selected: boolean;
   hideLabel: boolean;
+  interactive: boolean;
   onSelect: () => void;
 }) {
   const color = SUBCATEGORIES[branch.subId]?.color ?? '#9b59b6';
@@ -2049,6 +2070,7 @@ function BranchMarker({
       <Circle
         radius={Math.max(r + 6 * invScale, 14 * invScale)}
         opacity={0}
+        listening={interactive}
         onMouseDown={(e) => {
           e.cancelBubble = true;
           onSelect();
@@ -2066,11 +2088,13 @@ function BendMarker({
   bend,
   invScale,
   selected,
+  interactive,
   onSelect,
 }: {
   bend: BendEntity;
   invScale: number;
   selected: boolean;
+  interactive: boolean;
   onSelect: () => void;
 }) {
   // Bend-punktet vises nå som en jevn avrundet sving på selve kanalveggen (se
@@ -2096,6 +2120,7 @@ function BendMarker({
       <Circle
         radius={12 * invScale}
         opacity={0}
+        listening={interactive}
         onMouseDown={(e) => {
           e.cancelBubble = true;
           onSelect();
@@ -2297,10 +2322,11 @@ interface MeasurementNodeProps {
   metersPerPixel: number | null;
   selected: boolean;
   invScale: number;
+  interactive: boolean;
   onSelect: () => void;
 }
 
-function MeasurementNode({ measurement, metersPerPixel, selected, invScale, onSelect }: MeasurementNodeProps) {
+function MeasurementNode({ measurement, metersPerPixel, selected, invScale, interactive, onSelect }: MeasurementNodeProps) {
   const color = selected ? '#f5a623' : '#7c4dff';
   const isArea = measurement.type === 'area';
   const label = isArea
@@ -2311,7 +2337,7 @@ function MeasurementNode({ measurement, metersPerPixel, selected, invScale, onSe
     : { x: (measurement.points[0] + measurement.points[2]) / 2, y: (measurement.points[1] + measurement.points[3]) / 2 };
   const fontSize = 12 * invScale;
   return (
-    <Group onMouseDown={(e) => { e.cancelBubble = true; onSelect(); }}>
+    <Group listening={interactive} onMouseDown={(e) => { e.cancelBubble = true; onSelect(); }}>
       <Line
         points={measurement.points}
         stroke={color}
