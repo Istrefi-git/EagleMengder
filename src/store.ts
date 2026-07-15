@@ -19,6 +19,8 @@ import type {
   TransitionEntity,
 } from './types';
 import {
+  CLAMP_ROD_LENGTH_MM,
+  DEFAULT_CLAMP_ROD_DIAMETER,
   DEFAULT_CLAMP_SPACING,
   DEFAULT_PIPE_RENDER_STYLE,
   DEFAULT_STANDARD_LENGTHS,
@@ -132,6 +134,10 @@ interface PersistedSettings {
   autoInsertClamps: boolean;
   /** Avstand (mm) mellom klammer, per bygningsdel-type. */
   clampSpacing: { pipe: number; duct: number };
+  /** Standard gjengestag-diameter (mm) for nye klammer. */
+  clampRodDiameter: number;
+  /** Standard gjengestag-lengde (mm) for nye klammer. */
+  clampRodLengthMm: number;
 }
 
 function loadSettings(): PersistedSettings {
@@ -183,6 +189,9 @@ function loadSettings(): PersistedSettings {
             ? parsed.clampSpacing.duct
             : DEFAULT_CLAMP_SPACING.duct,
       },
+      clampRodDiameter:
+        typeof parsed.clampRodDiameter === 'number' ? parsed.clampRodDiameter : DEFAULT_CLAMP_ROD_DIAMETER,
+      clampRodLengthMm: typeof parsed.clampRodLengthMm === 'number' ? parsed.clampRodLengthMm : CLAMP_ROD_LENGTH_MM,
     };
   } catch {
     return defaultSettings();
@@ -202,6 +211,8 @@ function defaultSettings(): PersistedSettings {
     customColors: {},
     autoInsertClamps: false,
     clampSpacing: { ...DEFAULT_CLAMP_SPACING },
+    clampRodDiameter: DEFAULT_CLAMP_ROD_DIAMETER,
+    clampRodLengthMm: CLAMP_ROD_LENGTH_MM,
   };
 }
 
@@ -229,6 +240,8 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     customColors: s.customColors,
     autoInsertClamps: s.autoInsertClamps,
     clampSpacing: s.clampSpacing,
+    clampRodDiameter: s.clampRodDiameter,
+    clampRodLengthMm: s.clampRodLengthMm,
     ...overrides,
   });
 }
@@ -317,6 +330,10 @@ interface AppState {
   autoInsertClamps: boolean;
   /** Avstand (mm) mellom klammer, per bygningsdel-type. */
   clampSpacing: { pipe: number; duct: number };
+  /** Standard gjengestag-diameter (mm) for nye klammer. */
+  clampRodDiameter: number;
+  /** Standard gjengestag-lengde (mm) for nye klammer. */
+  clampRodLengthMm: number;
   /** Sist brukt stil for nye annotasjoner/markup, per type. Én felles form (ikke alle
    * felt er relevante for alle typer – f.eks. leser tekst-typene kun fontSize, mens
    * former leser strokeWidth) holder typingen enkel og gjenbrukbar. */
@@ -501,6 +518,9 @@ interface AppState {
   setStandardLength: (kind: 'pipe' | 'duct', mm: number) => void;
   setAutoInsertClamps: (on: boolean) => void;
   setClampSpacing: (kind: 'pipe' | 'duct', mm: number) => void;
+  setClampRodDiameter: (mm: number) => void;
+  setClampRodLengthMm: (mm: number) => void;
+  updateClampProps: (id: string, patch: Partial<Pick<ClampEntity, 'rodDiameter' | 'rodLengthMm'>>) => void;
   setPipeRenderStyle: (style: PipeRenderStyle) => void;
   setTheme: (theme: Theme) => void;
   openSettingsDialog: () => void;
@@ -635,6 +655,8 @@ export const useStore = create<AppState>((set, get) => {
   customColors: initialSettings.customColors,
   autoInsertClamps: initialSettings.autoInsertClamps,
   clampSpacing: initialSettings.clampSpacing,
+  clampRodDiameter: initialSettings.clampRodDiameter,
+  clampRodLengthMm: initialSettings.clampRodLengthMm,
   annotationConfig: {
     text: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
     textbox: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
@@ -818,6 +840,8 @@ export const useStore = create<AppState>((set, get) => {
               y: y0 + segDy * t,
               angleDeg,
               dimension: finalDimension,
+              rodDiameter: clampState.clampRodDiameter,
+              rodLengthMm: clampState.clampRodLengthMm,
             });
           }
         }
@@ -1130,14 +1154,17 @@ export const useStore = create<AppState>((set, get) => {
 
   addClamp: (lineId, x, y, angleDeg, dimension) => {
     recordHistory();
+    const s0 = get();
     const clamp: ClampEntity = {
       id: nextId('clamp'),
-      page: get().currentPage,
+      page: s0.currentPage,
       lineId,
       x,
       y,
       angleDeg,
       dimension,
+      rodDiameter: s0.clampRodDiameter,
+      rodLengthMm: s0.clampRodLengthMm,
     };
     set((s) => ({ clamps: [...s.clamps, clamp], selectedId: clamp.id, selectedKind: 'clamp' }));
   },
@@ -1206,6 +1233,23 @@ export const useStore = create<AppState>((set, get) => {
       persistSettings(s, { clampSpacing: next });
       return { clampSpacing: next };
     }),
+
+  setClampRodDiameter: (mm) =>
+    set((s) => {
+      persistSettings(s, { clampRodDiameter: mm });
+      return { clampRodDiameter: mm };
+    }),
+
+  setClampRodLengthMm: (mm) =>
+    set((s) => {
+      persistSettings(s, { clampRodLengthMm: mm });
+      return { clampRodLengthMm: mm };
+    }),
+
+  updateClampProps: (id, patch) => {
+    recordHistory();
+    set((s) => ({ clamps: s.clamps.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
+  },
 
   setPipeRenderStyle: (style) =>
     set((s) => {

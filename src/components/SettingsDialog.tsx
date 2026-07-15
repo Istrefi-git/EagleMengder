@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Trash2, X } from 'lucide-react';
 import { useStore } from '../store';
-import { CLAMP_ROD_LABEL, CLAMP_ROD_LENGTH_MM, DUCT_LENGTH_OPTIONS_MM, PIPE_LENGTH_OPTIONS_MM } from '../types';
+import { CLAMP_ROD_DIAMETERS, DUCT_LENGTH_OPTIONS_MM, PIPE_LENGTH_OPTIONS_MM } from '../types';
 
 export function SettingsDialog() {
   const open = useStore((s) => s.settingsDialogOpen);
@@ -15,6 +15,10 @@ export function SettingsDialog() {
   const setAutoInsertClamps = useStore((s) => s.setAutoInsertClamps);
   const clampSpacing = useStore((s) => s.clampSpacing);
   const setClampSpacing = useStore((s) => s.setClampSpacing);
+  const clampRodDiameter = useStore((s) => s.clampRodDiameter);
+  const setClampRodDiameter = useStore((s) => s.setClampRodDiameter);
+  const clampRodLengthMm = useStore((s) => s.clampRodLengthMm);
+  const setClampRodLengthMm = useStore((s) => s.setClampRodLengthMm);
   const customSystems = useStore((s) => s.customSystems);
   const addCustomSystem = useStore((s) => s.addCustomSystem);
   const removeCustomSystem = useStore((s) => s.removeCustomSystem);
@@ -108,13 +112,36 @@ export function SettingsDialog() {
               />
               <span>Legg til klammer og gjengestag automatisk på nye kanaler/rør</span>
             </label>
+            <p className="note">
+              Klammer kan også settes inn manuelt ved å høyreklikke på et tegnet
+              rør/kanal. Standard gjengestag-diameter og -lengde under brukes for
+              alle nye klammer, både automatiske og manuelt plasserte.
+            </p>
+            <div className="field">
+              <span>Standard gjengestag – diameter</span>
+              <select
+                value={clampRodDiameter}
+                onChange={(e) => setClampRodDiameter(Number(e.target.value))}
+              >
+                {CLAMP_ROD_DIAMETERS.map((d) => (
+                  <option key={d} value={d}>
+                    Ø{d} mm
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <span>Standard gjengestag – lengde</span>
+              <input
+                type="number"
+                min={50}
+                step={10}
+                value={clampRodLengthMm}
+                onChange={(e) => setClampRodLengthMm(Number(e.target.value))}
+              />
+            </div>
             {autoInsertClamps && (
               <>
-                <p className="note">
-                  Klammer settes inn jevnt fordelt langs nye kanaler/rør du tegner
-                  (allerede tegnede berøres ikke). Hvert klammer regnes med{' '}
-                  {CLAMP_ROD_LENGTH_MM} mm {CLAMP_ROD_LABEL.toLowerCase()}.
-                </p>
                 <div className="field">
                   <span>Klammeravstand – kanal</span>
                   <input

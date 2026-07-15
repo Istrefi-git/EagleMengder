@@ -112,6 +112,7 @@ export function PdfCanvas() {
   const addTag = useStore((s) => s.addTag);
   const updateTagLabel = useStore((s) => s.updateTagLabel);
   const clamps = useStore((s) => s.clamps);
+  const addClamp = useStore((s) => s.addClamp);
   const updateClampPosition = useStore((s) => s.updateClampPosition);
   const nudgeClamp = useStore((s) => s.nudgeClamp);
   const measurements = useStore((s) => s.measurements);
@@ -278,12 +279,26 @@ export function PdfCanvas() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
       if (e.key === 'Escape') {
+        // Avbryt all pågående tegning/markup.
         setDraftPoints([]);
         setContinuationAnchor(null);
         setCalibPoints([]);
         setMeasureDraftPoints([]);
         setPolygonDraftPoints([]);
-        setTool('select');
+        setCloudDraft(null);
+        setBoxDraft(null);
+        setLineDraft(null);
+        setRectDraft(null);
+        // Fra et tegne-/markup-/måle-/symbol-/tag-/kalibrerverktøy → tilbake til panorering.
+        // Ellers (allerede velg/panorer) tømmer vi bare utvalget.
+        const inDrawingTool =
+          isLineTool || isAnnotationTool || isMeasureTool || isSymbolTool || tool === 'tag' || tool === 'calibrate';
+        if (inDrawingTool) {
+          setTool('pan');
+        } else {
+          clearSelection();
+          clearMultiSelection();
+        }
       } else if (e.key === 'Enter' && draftPoints.length >= 4 && isLineTool) {
         finishLine();
       } else if (e.key === 'Enter' && measureType === 'area' && measureDraftPoints.length >= 6) {
@@ -368,6 +383,11 @@ export function PdfCanvas() {
     annotationType,
     polygonDraftPoints,
     addAnnotation,
+    isAnnotationTool,
+    isMeasureTool,
+    isSymbolTool,
+    clearSelection,
+    clearMultiSelection,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -769,6 +789,33 @@ export function PdfCanvas() {
         return;
       }
       if (isAnnotationTool && annotationType) {
+        // Klikk-flytt-klikk (hybrid med dra): hvis en draft allerede er i gang, fullfør
+        // den ved dette (andre) klikket – slik at man ikke må holde museknappen inne.
+        if (cloudDraft) {
+          const w = Math.abs(p.x - cloudDraft.x0);
+          const h = Math.abs(p.y - cloudDraft.y0);
+          setCloudDraft(null);
+          if (w > 8 && h > 8)
+            addAnnotation('cloud', Math.min(cloudDraft.x0, p.x), Math.min(cloudDraft.y0, p.y), { width: w, height: h });
+          return;
+        }
+        if (boxDraft) {
+          const w = Math.abs(p.x - boxDraft.x0);
+          const h = Math.abs(p.y - boxDraft.y0);
+          setBoxDraft(null);
+          if (w > 8 && h > 8)
+            addAnnotation(annotationType, Math.min(boxDraft.x0, p.x), Math.min(boxDraft.y0, p.y), {
+              width: w,
+              height: h,
+            });
+          return;
+        }
+        if (lineDraft) {
+          setLineDraft(null);
+          if (distance(lineDraft.x0, lineDraft.y0, p.x, p.y) > 8)
+            addAnnotation(annotationType, 0, 0, { points: [lineDraft.x0, lineDraft.y0, p.x, p.y] });
+          return;
+        }
         if (annotationType === 'text') {
           addAnnotation('text', p.x, p.y);
         } else if (annotationType === 'callout') {
@@ -789,7 +836,7 @@ export function PdfCanvas() {
         } else if (annotationType === 'cloud') {
           setCloudDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
         } else {
-          // rect, ellipse, highlight, textbox: klikk+dra-bounding box.
+          // rect, ellipse, highlight, textbox: første klikk starter boksen.
           setBoxDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
         }
         return;
@@ -830,9 +877,18 @@ export function PdfCanvas() {
         return;
       }
       if (isMeasureTool && measureType) {
-        // Rektangulær arealmåling: klikk-og-dra definerer rektangelet (committes i mouseup).
+        // Rektangulær arealmåling: klikk-flytt-klikk (hybrid med dra). Andre klikk fullfører.
         if (measureType === 'area' && areaMeasureMode === 'rect') {
-          setRectDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+          if (rectDraft) {
+            const x0 = Math.min(rectDraft.x0, p.x);
+            const x1 = Math.max(rectDraft.x0, p.x);
+            const y0 = Math.min(rectDraft.y0, p.y);
+            const y1 = Math.max(rectDraft.y0, p.y);
+            setRectDraft(null);
+            if (x1 - x0 > 4 && y1 - y0 > 4) addMeasurement('area', [x0, y0, x1, y0, x1, y1, x0, y1]);
+          } else {
+            setRectDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+          }
           return;
         }
         // Frihånds-areal / avstand: snap til nærmeste vektorpunkt, men hold Shift
@@ -890,6 +946,10 @@ export function PdfCanvas() {
       annotationType,
       addAnnotation,
       polygonDraftPoints,
+      cloudDraft,
+      boxDraft,
+      lineDraft,
+      rectDraft,
       isSymbolTool,
       tool,
       lines,
@@ -1036,41 +1096,53 @@ export function PdfCanvas() {
   );
 
   const handleStageMouseUp = useCallback(() => {
+    // For markup-/areal-draftene støtter vi BÅDE dra-og-slipp og klikk-flytt-klikk:
+    // på mouseup committer vi kun hvis pekeren ble dratt (flyttet mer enn terskelen
+    // siden startklikket). Ved et rent klikk lar vi draften leve videre – den fullføres
+    // da av det neste klikket (håndtert i handleStageMouseDown).
+    const dragThreshold = 6 * invScale;
     if (cloudDraft) {
-      const x0 = Math.min(cloudDraft.x0, cloudDraft.x1);
-      const y0 = Math.min(cloudDraft.y0, cloudDraft.y1);
-      const w = Math.abs(cloudDraft.x1 - cloudDraft.x0);
-      const h = Math.abs(cloudDraft.y1 - cloudDraft.y0);
-      setCloudDraft(null);
-      if (w > 8 && h > 8) addAnnotation('cloud', x0, y0, { width: w, height: h });
+      const moved = distance(cloudDraft.x0, cloudDraft.y0, cloudDraft.x1, cloudDraft.y1) > dragThreshold;
+      if (moved) {
+        const x0 = Math.min(cloudDraft.x0, cloudDraft.x1);
+        const y0 = Math.min(cloudDraft.y0, cloudDraft.y1);
+        const w = Math.abs(cloudDraft.x1 - cloudDraft.x0);
+        const h = Math.abs(cloudDraft.y1 - cloudDraft.y0);
+        setCloudDraft(null);
+        if (w > 8 && h > 8) addAnnotation('cloud', x0, y0, { width: w, height: h });
+      }
       return;
     }
     if (boxDraft && annotationType) {
-      const x0 = Math.min(boxDraft.x0, boxDraft.x1);
-      const y0 = Math.min(boxDraft.y0, boxDraft.y1);
-      const w = Math.abs(boxDraft.x1 - boxDraft.x0);
-      const h = Math.abs(boxDraft.y1 - boxDraft.y0);
-      setBoxDraft(null);
-      if (w > 8 && h > 8) addAnnotation(annotationType, x0, y0, { width: w, height: h });
+      const moved = distance(boxDraft.x0, boxDraft.y0, boxDraft.x1, boxDraft.y1) > dragThreshold;
+      if (moved) {
+        const x0 = Math.min(boxDraft.x0, boxDraft.x1);
+        const y0 = Math.min(boxDraft.y0, boxDraft.y1);
+        const w = Math.abs(boxDraft.x1 - boxDraft.x0);
+        const h = Math.abs(boxDraft.y1 - boxDraft.y0);
+        setBoxDraft(null);
+        if (w > 8 && h > 8) addAnnotation(annotationType, x0, y0, { width: w, height: h });
+      }
       return;
     }
     if (lineDraft && annotationType) {
       const { x0, y0, x1, y1 } = lineDraft;
-      setLineDraft(null);
-      if (distance(x0, y0, x1, y1) > 8) {
-        addAnnotation(annotationType, 0, 0, { points: [x0, y0, x1, y1] });
+      if (distance(x0, y0, x1, y1) > dragThreshold) {
+        setLineDraft(null);
+        if (distance(x0, y0, x1, y1) > 8) addAnnotation(annotationType, 0, 0, { points: [x0, y0, x1, y1] });
       }
       return;
     }
     if (rectDraft) {
-      // Rektangulær arealmåling committes som et lukket 4-hjørne-polygon.
-      const x0 = Math.min(rectDraft.x0, rectDraft.x1);
-      const x1 = Math.max(rectDraft.x0, rectDraft.x1);
-      const y0 = Math.min(rectDraft.y0, rectDraft.y1);
-      const y1 = Math.max(rectDraft.y0, rectDraft.y1);
-      setRectDraft(null);
-      if (x1 - x0 > 4 && y1 - y0 > 4) {
-        addMeasurement('area', [x0, y0, x1, y0, x1, y1, x0, y1]);
+      const moved = distance(rectDraft.x0, rectDraft.y0, rectDraft.x1, rectDraft.y1) > dragThreshold;
+      if (moved) {
+        // Rektangulær arealmåling committes som et lukket 4-hjørne-polygon.
+        const x0 = Math.min(rectDraft.x0, rectDraft.x1);
+        const x1 = Math.max(rectDraft.x0, rectDraft.x1);
+        const y0 = Math.min(rectDraft.y0, rectDraft.y1);
+        const y1 = Math.max(rectDraft.y0, rectDraft.y1);
+        setRectDraft(null);
+        if (x1 - x0 > 4 && y1 - y0 > 4) addMeasurement('area', [x0, y0, x1, y0, x1, y1, x0, y1]);
       }
       return;
     }
@@ -1171,6 +1243,7 @@ export function PdfCanvas() {
     lineDraft,
     annotationType,
     rectDraft,
+    invScale,
     addAnnotation,
     addMeasurement,
     lines,
@@ -1223,6 +1296,30 @@ export function PdfCanvas() {
       setView({ ...view, x: e.target.x(), y: e.target.y() });
     },
     [view, setView],
+  );
+
+  // Høyreklikk på et tegnet rør/kanal setter inn et klammer der (uavhengig av
+  // «auto-klammer»-innstillingen). Bruker gjeldende standard gjengestag-diameter/lengde.
+  const handleContextMenu = useCallback(
+    (e: Konva.KonvaEventObject<MouseEvent>) => {
+      e.evt.preventDefault();
+      const p = getImagePoint();
+      if (!p) return;
+      // Nærmeste rør ELLER kanal innenfor bredde-toleransen (ingen kind-filter).
+      let best: { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null = null;
+      for (const line of lines) {
+        if (line.page !== currentPage) continue;
+        const cp = closestPointOnPolyline(line.points, p);
+        if (!cp) continue;
+        const dimMm = dimensionDiameterMm(line.dimension);
+        const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+        if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
+          best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
+        }
+      }
+      if (best) addClamp(best.line.id, best.x, best.y, best.angleDeg, best.line.dimension);
+    },
+    [getImagePoint, lines, currentPage, scale.metersPerPixel, invScale, addClamp],
   );
 
   const cursorStyle =
@@ -1489,7 +1586,7 @@ export function PdfCanvas() {
               <input
                 type="number"
                 min={1}
-                max={8}
+                max={20}
                 value={annotationConfig[annotationType].strokeWidth}
                 onChange={(e) => setAnnotationConfig(annotationType, { strokeWidth: Number(e.target.value) })}
               />
@@ -1547,6 +1644,7 @@ export function PdfCanvas() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleStageMouseUp}
         onDblClick={handleDblClick}
+        onContextMenu={handleContextMenu}
         onWheel={handleWheel}
         onDragEnd={handleStageDragEnd}
       >

@@ -2,8 +2,9 @@ import { Trash2 } from 'lucide-react';
 import { useStore } from '../store';
 import {
   CATEGORIES,
-  CLAMP_ROD_LABEL,
+  CLAMP_ROD_DIAMETERS,
   CLAMP_ROD_LENGTH_MM,
+  DEFAULT_CLAMP_ROD_DIAMETER,
   SUBCATEGORIES,
   SYMBOL_DEFS,
   TEXT_ANNOTATION_TYPES,
@@ -35,6 +36,7 @@ export function PropertiesPanel() {
   const updateLineProps = useStore((s) => s.updateLineProps);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
+  const updateClampProps = useStore((s) => s.updateClampProps);
   const multiSelection = useStore((s) => s.multiSelection);
   const clearMultiSelection = useStore((s) => s.clearMultiSelection);
   const deleteMany = useStore((s) => s.deleteMany);
@@ -382,7 +384,7 @@ export function PropertiesPanel() {
             <input
               type="number"
               min={1}
-              max={8}
+              max={20}
               value={note.strokeWidth ?? 2}
               onChange={(e) => updateAnnotation(note.id, { strokeWidth: Number(e.target.value) })}
             />
@@ -440,10 +442,29 @@ export function PropertiesPanel() {
           <span>Dimensjon</span>
           <strong>{clamp.dimension}</strong>
         </div>
-        <div className="field readonly">
-          <span>Gjengestag</span>
-          <strong>{CLAMP_ROD_LABEL} · {CLAMP_ROD_LENGTH_MM} mm</strong>
-        </div>
+        <label className="field">
+          <span>Gjengestag – diameter</span>
+          <select
+            value={clamp.rodDiameter ?? DEFAULT_CLAMP_ROD_DIAMETER}
+            onChange={(e) => updateClampProps(clamp.id, { rodDiameter: Number(e.target.value) })}
+          >
+            {CLAMP_ROD_DIAMETERS.map((d) => (
+              <option key={d} value={d}>
+                Ø{d} mm
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Gjengestag – lengde</span>
+          <input
+            type="number"
+            min={50}
+            step={10}
+            value={clamp.rodLengthMm ?? CLAMP_ROD_LENGTH_MM}
+            onChange={(e) => updateClampProps(clamp.id, { rodLengthMm: Number(e.target.value) })}
+          />
+        </label>
         <button className="btn danger full" onClick={deleteSelected}>
           <Trash2 size={15} />
           Slett klammer

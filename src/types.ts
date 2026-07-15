@@ -229,6 +229,11 @@ export interface ClampEntity {
   angleDeg: number;
   /** Samme dimensjon som røret/kanalen klammeret er festet til. */
   dimension: string;
+  /** Gjengestag-diameter (mm). Valgfritt for bakoverkompatibilitet med eldre lagrede
+   * prosjekter – mangler den, brukes DEFAULT_CLAMP_ROD_DIAMETER. */
+  rodDiameter?: number;
+  /** Gjengestag-lengde (mm). Valgfritt; mangler den, brukes CLAMP_ROD_LENGTH_MM. */
+  rodLengthMm?: number;
 }
 
 /** Standard klammeravstand (mm) – kanal hver 2400 mm, rør hver 1500 mm. Konfigurerbart
@@ -237,9 +242,14 @@ export const DEFAULT_CLAMP_SPACING: Record<'pipe' | 'duct', number> = {
   pipe: 1500,
   duct: 2400,
 };
-/** Lengde (mm) gjengestag per klammer – fast, ikke konfigurerbar (bransjestandard). */
+/** Standard gjengestag-lengde (mm) per klammer. Konfigurerbart i Innstillinger
+ * (clampRodLengthMm) og per klammer i egenskapspanelet. */
 export const CLAMP_ROD_LENGTH_MM = 200;
-export const CLAMP_ROD_LABEL = 'Ø8mm gjengestag';
+/** Valgbare gjengestag-diametere (mm). */
+export const CLAMP_ROD_DIAMETERS = [8, 10, 12, 16] as const;
+export const DEFAULT_CLAMP_ROD_DIAMETER = 8;
+/** Mengdeliste-etikett for gjengestag av en gitt diameter. */
+export const rodLabel = (diameterMm: number): string => `Ø${diameterMm}mm gjengestag`;
 
 /** Frittstående målepunkt/areal-måling («linjal»-verktøy) – punkt-til-punkt avstand
  * eller et lukket rom-polygon for arealmåling. Rent visuelt hjelpemiddel, påvirker

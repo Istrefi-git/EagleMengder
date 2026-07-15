@@ -10,8 +10,10 @@ import {
   ChevronRight,
   Circle,
   Cloud,
+  Cylinder,
   Eye,
   EyeOff,
+  Fan,
   GitFork,
   Hand,
   Highlighter,
@@ -29,7 +31,6 @@ import {
   TextCursorInput,
   Trash2,
   Type,
-  Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -95,6 +96,10 @@ export function Toolbar() {
   const toggleCat = (code: string) => setCollapsedCats((c) => ({ ...c, [code]: !c[code] }));
   const [ventOpen, setVentOpen] = useState(false);
   const [pipeCompOpen, setPipeCompOpen] = useState(false);
+  // «Tekst & skyer» og «Verktøy» kan minimeres på samme måte som komponentseksjonene –
+  // starter åpne siden markup-/måleverktøyene brukes ofte.
+  const [textOpen, setTextOpen] = useState(true);
+  const [toolsOpen, setToolsOpen] = useState(true);
 
   // Hvilken underkategori har en åpen velger, og om man er på materiale- eller dimensjonssteget
   const [openSubId, setOpenSubId] = useState<string | null>(null);
@@ -207,7 +212,7 @@ export function Toolbar() {
           <span className={`cat-caret ${ventOpen ? 'open' : ''}`}>
             <ChevronRight size={13} />
           </span>
-          <Wrench size={13} className="cat-icon" />
+          <Fan size={13} className="cat-icon" />
           <span className="cat-label">Komponenter – Ventilasjon</span>
         </button>
         <div className={`collapse ${ventOpen ? 'open' : ''}`}>
@@ -236,7 +241,7 @@ export function Toolbar() {
           <span className={`cat-caret ${pipeCompOpen ? 'open' : ''}`}>
             <ChevronRight size={13} />
           </span>
-          <Wrench size={13} className="cat-icon" />
+          <Cylinder size={13} className="cat-icon" />
           <span className="cat-label">Komponenter – Rør</span>
         </button>
         <div className={`collapse ${pipeCompOpen ? 'open' : ''}`}>
@@ -261,24 +266,40 @@ export function Toolbar() {
       </div>
 
       <div className="tool-section">
-        <span className="tool-heading">Tekst &amp; skyer</span>
-        <ToolButton mode="annotation:text" label="Tekst" icon={Type} />
-        <ToolButton mode="annotation:textbox" label="Tekstboks" icon={TextCursorInput} />
-        <ToolButton mode="annotation:callout" label="Melding" icon={MessageSquareText} />
-        <ToolButton mode="annotation:cloud" label="Sky" icon={Cloud} />
+        <button className="cat-header-toggle" onClick={() => setTextOpen((o) => !o)} disabled={disabled}>
+          <span className={`cat-caret ${textOpen ? 'open' : ''}`}>
+            <ChevronRight size={13} />
+          </span>
+          <Type size={13} className="cat-icon" />
+          <span className="cat-label">Tekst &amp; skyer</span>
+        </button>
+        <div className={`collapse ${textOpen ? 'open' : ''}`}>
+          <ToolButton mode="annotation:text" label="Tekst" icon={Type} />
+          <ToolButton mode="annotation:textbox" label="Tekstboks" icon={TextCursorInput} />
+          <ToolButton mode="annotation:callout" label="Melding" icon={MessageSquareText} />
+          <ToolButton mode="annotation:cloud" label="Sky" icon={Cloud} />
+        </div>
       </div>
 
       <div className="tool-section">
-        <span className="tool-heading">Verktøy</span>
-        <ToolButton mode="tag" label="Tag" icon={TagIcon} />
-        <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} />
-        <ToolButton mode="measure:area" label="Areal" icon={LandPlot} />
-        <ToolButton mode="annotation:line" label="Linje" icon={Minus} />
-        <ToolButton mode="annotation:arrow" label="Pil" icon={MoveUpRight} />
-        <ToolButton mode="annotation:ellipse" label="Ellipse" icon={Circle} />
-        <ToolButton mode="annotation:rect" label="Rektangel" icon={Square} />
-        <ToolButton mode="annotation:polygon" label="Polygon" icon={Pentagon} />
-        <ToolButton mode="annotation:highlight" label="Marker" icon={Highlighter} />
+        <button className="cat-header-toggle" onClick={() => setToolsOpen((o) => !o)} disabled={disabled}>
+          <span className={`cat-caret ${toolsOpen ? 'open' : ''}`}>
+            <ChevronRight size={13} />
+          </span>
+          <Ruler size={13} className="cat-icon" />
+          <span className="cat-label">Verktøy</span>
+        </button>
+        <div className={`collapse ${toolsOpen ? 'open' : ''}`}>
+          <ToolButton mode="tag" label="Tag" icon={TagIcon} />
+          <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} />
+          <ToolButton mode="measure:area" label="Areal" icon={LandPlot} />
+          <ToolButton mode="annotation:line" label="Linje" icon={Minus} />
+          <ToolButton mode="annotation:arrow" label="Pil" icon={MoveUpRight} />
+          <ToolButton mode="annotation:ellipse" label="Ellipse" icon={Circle} />
+          <ToolButton mode="annotation:rect" label="Rektangel" icon={Square} />
+          <ToolButton mode="annotation:polygon" label="Polygon" icon={Pentagon} />
+          <ToolButton mode="annotation:highlight" label="Marker" icon={Highlighter} />
+        </div>
       </div>
 
       <div className="tool-section">

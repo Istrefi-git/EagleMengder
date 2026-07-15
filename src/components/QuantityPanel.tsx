@@ -1,6 +1,6 @@
 import { ArrowRightLeft, CornerUpRight, GitFork, Link2, Maximize2, Minimize2, Wrench } from 'lucide-react';
 import { useStore } from '../store';
-import { CATEGORIES, CLAMP_ROD_LABEL, CLAMP_ROD_LENGTH_MM, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor } from '../types';
+import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor, rodLabel } from '../types';
 import { buildQuantityReport, categoryTotalMm } from '../lib/quantityReport';
 import { formatMm } from '../lib/scale';
 
@@ -35,6 +35,7 @@ export function QuantityPanel() {
     transitionCounts,
     clampCounts,
     totalClamps,
+    rodTotals,
     subLineIds,
     subDetailIds,
     symbolDetailIds,
@@ -248,13 +249,17 @@ export function QuantityPanel() {
                   <span className="qty-value">{count} stk</span>
                 </div>
               ))}
-              <div className="qty-row" title="200 mm gjengestag per klammer.">
-                <span className="qty-label">
-                  <Wrench size={13} className="qty-auto-icon" />
-                  {CLAMP_ROD_LABEL}
-                </span>
-                <span className="qty-value">{formatMm(totalClamps * CLAMP_ROD_LENGTH_MM)}</span>
-              </div>
+              {Object.entries(rodTotals)
+                .sort(([a], [b]) => Number(a) - Number(b))
+                .map(([dia, { lengthMm }]) => (
+                  <div key={dia} className="qty-row" title="Gjengestag – 1 stk per klammer.">
+                    <span className="qty-label">
+                      <Wrench size={13} className="qty-auto-icon" />
+                      {rodLabel(Number(dia))}
+                    </span>
+                    <span className="qty-value">{formatMm(lengthMm)}</span>
+                  </div>
+                ))}
             </>
           )}
         </div>

@@ -15,14 +15,15 @@ import type {
 } from '../types';
 import {
   CATEGORIES,
-  CLAMP_ROD_LABEL,
   CLAMP_ROD_LENGTH_MM,
+  DEFAULT_CLAMP_ROD_DIAMETER,
   SUBCATEGORIES,
   SYMBOL_DEFS,
   SYMBOL_TYPE_ORDER,
   branchFittingLabel,
   categoryOf,
   jointCountForLength,
+  rodLabel,
   jointLabel,
 } from '../types';
 import { classifyBendAngle, polylineBendAngles, polylineLength } from './geometry';
@@ -73,11 +74,13 @@ export interface QuantityReport {
   jointCounts: Record<string, number>;
   branchCounts: Record<string, number>;
   transitionCounts: Record<string, number>;
-  /** Klammer (bæring) satt inn automatisk ved tegning (se store.ts: autoInsertClamps) –
-   * summert per underkategori+materiale+dimensjon, samme mønster som bendCounts osv.
-   * Gjengestag-mengden følger 1:1 av klammerantallet (200 mm per klammer). */
+  /** Klammer (bæring) – summert per underkategori+materiale+dimensjon, samme mønster som
+   * bendCounts osv. */
   clampCounts: Record<string, number>;
   totalClamps: number;
+  /** Gjengestag summert per diameter (mm) → antall klammer + total lengde (mm). Slik at
+   * en blandet tegning kan vise «Ø8mm gjengestag», «Ø12mm gjengestag» osv. hver for seg. */
+  rodTotals: Record<number, { count: number; lengthMm: number }>;
   rows: QuantityRow[];
   /** Entitets-id-er bak hver rad, brukt til å utheve alt tegnet av samme type i
    * mengdelisten når man klikker en rad (se QuantityPanel). Nøklene her matcher
@@ -277,6 +280,7 @@ export function buildQuantityReport(
 
   const clampCounts: Record<string, number> = {};
   const clampIds: Record<string, string[]> = {};
+  const rodTotals: Record<number, { count: number; lengthMm: number }> = {};
   let totalClamps = 0;
   for (const c of clamps) {
     const line = lines.find((l) => l.id === c.lineId);
@@ -288,6 +292,11 @@ export function buildQuantityReport(
     clampCounts[key] = (clampCounts[key] ?? 0) + 1;
     pushId(clampIds, key, c.id);
     totalClamps += 1;
+    const dia = c.rodDiameter ?? DEFAULT_CLAMP_ROD_DIAMETER;
+    const rodLen = c.rodLengthMm ?? CLAMP_ROD_LENGTH_MM;
+    const rt = (rodTotals[dia] ??= { count: 0, lengthMm: 0 });
+    rt.count += 1;
+    rt.lengthMm += rodLen;
     const system = cat ? `${cat.code} ${cat.label}` : subId;
     rows.push({
       system,
@@ -303,9 +312,9 @@ export function buildQuantityReport(
       underkategori: sub?.label ?? subId,
       materiale: material,
       dimensjon: c.dimension,
-      lengdeMm: CLAMP_ROD_LENGTH_MM,
+      lengdeMm: rodLen,
       antall: 1,
-      type: CLAMP_ROD_LABEL,
+      type: rodLabel(dia),
     });
   }
 
@@ -323,6 +332,7 @@ export function buildQuantityReport(
     transitionCounts,
     clampCounts,
     totalClamps,
+    rodTotals,
     rows,
     subLineIds,
     subDetailIds,
