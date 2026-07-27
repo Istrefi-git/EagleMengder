@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Circle,
   Cloud,
+  Copy,
   Cylinder,
   Eye,
   EyeOff,
@@ -21,10 +22,12 @@ import {
   Minus,
   MessageSquareText,
   MousePointer2,
+  Move,
   MoveUpRight,
   Pentagon,
   Plus,
   Ruler,
+  Scissors,
   Settings2,
   Square,
   Tag as TagIcon,
@@ -120,16 +123,18 @@ export function Toolbar() {
     mode,
     label,
     icon: Icon,
+    title,
   }: {
     mode: ToolMode;
     label: string;
     icon: LucideIcon;
+    title?: string;
   }) => (
     <button
       className={`tool ${tool === mode ? 'active' : ''}`}
       onClick={() => setTool(mode)}
       disabled={disabled}
-      title={label}
+      title={title ?? label}
     >
       <span className="tool-icon">
         <Icon size={16} />
@@ -144,6 +149,28 @@ export function Toolbar() {
         <span className="tool-heading">Navigasjon</span>
         <ToolButton mode="select" label="Velg" icon={MousePointer2} />
         <ToolButton mode="pan" label="Panorer" icon={Hand} />
+      </div>
+
+      <div className="tool-section">
+        <span className="tool-heading">Rediger</span>
+        <ToolButton
+          mode="move"
+          label="Flytt"
+          icon={Move}
+          title="Velg objekter, klikk et basispunkt, klikk der de skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
+        />
+        <ToolButton
+          mode="copy"
+          label="Kopier"
+          icon={Copy}
+          title="Velg objekter, klikk et basispunkt, klikk der kopien skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
+        />
+        <ToolButton
+          mode="split"
+          label="Del"
+          icon={Scissors}
+          title="Klikk på et tegnet rør/kanal for å dele det i to der du klikker."
+        />
       </div>
 
       <div className="tool-section">

@@ -53,6 +53,9 @@ export interface QuantityRow {
   lengdeMm: number;
   antall: number;
   type: string;
+  /** Entitets-id-ene raden representerer – brukes til å utheve dem på lerretet når en
+   * gruppert rad i mengdelisten klikkes (se quantityGroups.ts/QuantityPanel.tsx). */
+  ids: string[];
 }
 
 export interface QuantityReport {
@@ -146,6 +149,7 @@ export function buildQuantityReport(
       lengdeMm: Math.round(mm),
       antall: 1,
       type: cat?.kind === 'duct' ? 'Kanallengde' : 'Rørlengde',
+      ids: [line.id],
     });
 
     // Bakoverkompatibilitet: eldre lagrede linjer kan fortsatt være flerpunkts-polylinjer
@@ -166,6 +170,7 @@ export function buildQuantityReport(
         lengdeMm: 0,
         antall: 1,
         type: `Bend ${angle}°`,
+        ids: [line.id],
       });
     }
 
@@ -186,6 +191,7 @@ export function buildQuantityReport(
           lengdeMm: 0,
           antall: joints,
           type: label,
+          ids: [line.id],
         });
       }
     }
@@ -207,6 +213,7 @@ export function buildQuantityReport(
       lengdeMm: 0,
       antall: 1,
       type: `Bend ${b.angleDeg}°`,
+      ids: [b.id],
     });
   }
 
@@ -236,6 +243,7 @@ export function buildQuantityReport(
         lengdeMm: 0,
         antall: count,
         type: 'Komponent',
+        ids: symbolDetailIds[t]?.[key] ?? [],
       });
     }
   }
@@ -256,6 +264,7 @@ export function buildQuantityReport(
       lengdeMm: 0,
       antall: 1,
       type: 'Overgang',
+      ids: [t.id],
     });
   }
 
@@ -275,6 +284,7 @@ export function buildQuantityReport(
       lengdeMm: 0,
       antall: 1,
       type: branchFittingLabel(b.fittingType),
+      ids: [b.id],
     });
   }
 
@@ -306,6 +316,7 @@ export function buildQuantityReport(
       lengdeMm: 0,
       antall: 1,
       type: 'Klammer',
+      ids: [c.id],
     });
     rows.push({
       system,
@@ -315,6 +326,7 @@ export function buildQuantityReport(
       lengdeMm: rodLen,
       antall: 1,
       type: rodLabel(dia),
+      ids: [c.id],
     });
   }
 

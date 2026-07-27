@@ -40,6 +40,9 @@ export type ToolMode =
   | 'pan'
   | 'calibrate'
   | 'tag'
+  | 'move'
+  | 'copy'
+  | 'split'
   | `line:${string}` // line:<underkategori-id>
   | `symbol:${SymbolType}`
   | `annotation:${AnnotationType}`

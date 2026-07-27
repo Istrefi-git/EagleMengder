@@ -247,28 +247,20 @@ export function SymbolGlyph({ type, selected, showArrows = true, color }: Props)
         </Group>
       );
     case 'air_handling_unit':
-      // Ventilasjonsaggregat: rektangulær kasse med seksjonsdelere + vifte-/batteri-hint.
-      // Tegnes i nominell 2r×2r-boks slik at ikke-uniform skalering (scaleX/scaleY i
-      // SymbolNode) strekker den til oppgitt bredde × lengde.
+      // Ventilasjonsaggregat: en ren firkant i riktig fysisk størrelse – selve
+      // navnet skrives ved siden av (se SymbolNode i PdfCanvas.tsx, som tegner
+      // etiketten utenfor denne ikke-uniformt skalerte gruppen). Tegnes i nominell
+      // 2r×2r-boks slik at scaleX/scaleY i SymbolNode strekker den til oppgitt bredde × lengde.
       return (
-        <Group>
-          <Rect
-            x={-r}
-            y={-r}
-            width={r * 2}
-            height={r * 2}
-            stroke={stroke}
-            strokeWidth={sw}
-            fill={selected ? 'rgba(245,166,35,0.10)' : 'transparent'}
-          />
-          <Line points={[-r * 0.33, -r, -r * 0.33, r]} stroke={stroke} strokeWidth={1} />
-          <Line points={[r * 0.33, -r, r * 0.33, r]} stroke={stroke} strokeWidth={1} />
-          {/* Vifte i høyre seksjon */}
-          <Circle x={r * 0.66} radius={r * 0.3} stroke={stroke} strokeWidth={1.2} />
-          {/* Batteri-hint (kryss) i venstre seksjon */}
-          <Line points={[-r * 0.85, -r * 0.5, -r * 0.47, r * 0.5]} stroke={stroke} strokeWidth={1} />
-          <Line points={[-r * 0.85, r * 0.5, -r * 0.47, -r * 0.5]} stroke={stroke} strokeWidth={1} />
-        </Group>
+        <Rect
+          x={-r}
+          y={-r}
+          width={r * 2}
+          height={r * 2}
+          stroke={stroke}
+          strokeWidth={sw}
+          fill={selected ? 'rgba(245,166,35,0.10)' : 'transparent'}
+        />
       );
     default:
       return null;

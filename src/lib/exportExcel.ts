@@ -3,22 +3,28 @@
 // Excel-generering i nettleseren.
 
 import * as XLSX from 'xlsx';
-import type { QuantityReport } from './quantityReport';
+import type { QuantityGroup } from './quantityGroups';
 
-export function downloadQuantityExcel(report: QuantityReport, tilbudName: string) {
-  const data = report.rows.map((r) => ({
-    System: r.system,
-    Underkategori: r.underkategori,
-    Materiale: r.materiale,
-    Dimensjon: r.dimensjon,
-    'Lengde (mm)': r.lengdeMm || '',
-    Antall: r.antall,
-    Type: r.type,
-  }));
+/** Bygges fra de samme grupperte/sorterte gruppene som QuantityPanel viser på
+ * skjermen (se quantityGroups.ts), slik at rekkefølgen i regnearket alltid stemmer
+ * med det brukeren ser i mengdelisten. «Gruppe»-kolonnen lar brukeren selv
+ * filtrere/sortere videre i Excel etter samme akse som er valgt på skjermen. */
+export function downloadQuantityExcel(groups: QuantityGroup[], tilbudName: string) {
+  const data = groups.flatMap((g) =>
+    g.rows.map((r) => ({
+      Gruppe: g.key,
+      Underkategori: r.underkategori,
+      Materiale: r.materiale,
+      Dimensjon: r.dimensjon,
+      'Lengde (mm)': r.lengdeMm || '',
+      Antall: r.antall,
+      Type: r.type,
+    })),
+  );
 
   const sheet = XLSX.utils.json_to_sheet(data);
   sheet['!cols'] = [
-    { wch: 22 }, // System
+    { wch: 22 }, // Gruppe
     { wch: 20 }, // Underkategori
     { wch: 22 }, // Materiale
     { wch: 16 }, // Dimensjon

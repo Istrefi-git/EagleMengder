@@ -21,7 +21,9 @@ import { useStore } from '../store';
 import { detectScaleFromPdf, loadPdf } from '../lib/pdf';
 import { savePdfBytes } from '../lib/pdfStorage';
 import { buildQuantityReport } from '../lib/quantityReport';
+import { groupQuantity } from '../lib/quantityGroups';
 import { downloadQuantityExcel } from '../lib/exportExcel';
+import { captureDrawingDataUrl } from '../lib/stageCapture';
 import { IconMenu } from './IconMenu';
 
 interface Props {
@@ -62,11 +64,38 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const bends = useStore((s) => s.bends);
   const clamps = useStore((s) => s.clamps);
   const standardLengths = useStore((s) => s.standardLengths);
+  const quantityGroupBy = useStore((s) => s.quantityGroupBy);
+  const quantitySortBy = useStore((s) => s.quantitySortBy);
+  const quantitySortDir = useStore((s) => s.quantitySortDir);
+  const pageWidth = useStore((s) => s.pageWidth);
+  const pageHeight = useStore((s) => s.pageHeight);
+  const setPrintImage = useStore((s) => s.setPrintImage);
   const hasData = lines.length > 0 || symbols.length > 0;
 
   function exportExcel() {
     const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
-    downloadQuantityExcel(report, tilbudName);
+    // Samme gruppering/sortering som brukeren har valgt i mengdelisten (QuantityPanel),
+    // slik at eksporten alltid stemmer med det som vises på skjermen.
+    const groups = groupQuantity(report, {
+      groupBy: quantityGroupBy,
+      sortBy: quantitySortBy,
+      sortDir: quantitySortDir,
+    });
+    downloadQuantityExcel(groups, tilbudName);
+  }
+
+  /** Fanger hele tegningen som bilde FØR utskrift, slik at PrintableReport kan vise
+   * den på egen side foran mengdeliste-tabellen (window.print() plukker kun opp det
+   * som allerede er malt i DOM-en, så bildet må settes og rekkes å rendres først). */
+  function printReport() {
+    const dataUrl = captureDrawingDataUrl(pageWidth, pageHeight);
+    setPrintImage(dataUrl);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.print();
+        setPrintImage(null);
+      });
+    });
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -158,7 +187,7 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
           <FileSpreadsheet size={14} />
           Excel (.xlsx)
         </button>
-        <button className="icon-menu-item" onClick={() => window.print()} disabled={!hasData}>
+        <button className="icon-menu-item" onClick={printReport} disabled={!hasData}>
           <Printer size={14} />
           Skriv ut / PDF
         </button>

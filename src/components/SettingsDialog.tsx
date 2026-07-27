@@ -101,7 +101,7 @@ export function SettingsDialog() {
                 checked={hideComponentLabels}
                 onChange={(e) => setHideComponentLabels(e.target.checked)}
               />
-              <span>Skjul komponenttekst (overganger, avgreininger)</span>
+              <span>Skjul komponenttekst (overganger, avgreininger, ventilasjonsaggregat)</span>
             </label>
 
             <label className="field row">

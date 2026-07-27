@@ -1185,6 +1185,42 @@ body {
   gap: 6px;
 }
 
+/* Numerisk avstandsinntasting for Flytt/Kopier-verktøyet (Revit/AutoCAD-stil):
+   åpnes ved første siffertast under en pågående gest, klonet fra branch-choice-popover. */
+.move-distance-input {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  background: rgba(20, 26, 34, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 25;
+  animation: fade-in 0.18s ease;
+}
+.move-distance-input input {
+  width: 72px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  padding: 4px 6px;
+  text-align: right;
+}
+.move-distance-input input:focus {
+  outline: none;
+  border-color: var(--accent, #4c9aff);
+}
+.move-distance-input span {
+  color: #c4cdd8;
+  font-size: 12px;
+}
+
 .hint-bar {
   position: absolute;
   bottom: 50px;
@@ -1297,6 +1333,24 @@ body {
   flex: 1;
   overflow-y: auto;
   border-bottom: 1px solid var(--border);
+}
+.qty-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 10px;
+  flex-wrap: wrap;
+}
+.qty-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.qty-control select {
+  font-size: 12px;
+  padding: 3px 6px;
 }
 .qty-block {
   padding: 4px 12px 12px;
@@ -1710,5 +1764,19 @@ input[type='range'] {
   .printable-total {
     margin-top: 14px;
     font-weight: 600;
+  }
+  /* Tegningen (fanget av stageCapture) på egen side FØR mengdelistetabellen. */
+  .printable-drawing {
+    page-break-after: always;
+  }
+  .printable-drawing img {
+    display: block;
+    max-width: 100%;
+    max-height: 100vh;
+    margin: 0 auto;
+    object-fit: contain;
+  }
+  .printable-table-page {
+    page-break-before: auto;
   }
 }

@@ -18,6 +18,7 @@ import type {
   ToolMode,
   TransitionEntity,
 } from './types';
+import type { GroupBy, SortBy, SortDir } from './lib/quantityGroups';
 import {
   CLAMP_ROD_LENGTH_MM,
   DEFAULT_CLAMP_ROD_DIAMETER,
@@ -67,6 +68,450 @@ function findConnectedLineIds(pageLines: LineEntity[], seedIds: string[], eps = 
     }
   }
   return visited;
+}
+
+const JOINT_EPS = 0.5;
+
+/** Sørger for at hver RENE skjøt (nøyaktig to segmenter møtes) på de endrede linjene
+ * har en overgang når dimensjonene er ulike – og ingen når de er like. Idempotent: en
+ * eksisterende overgang i skjøten oppdateres i stedet for at det lages en ny, så
+ * gjentatte dimensjonsbytter ikke gir duplikater. Brukes av `updateLineProps`/
+ * `updateManyLineProps` etter en dimensjons-/underkategoriendring – typisk rett etter
+ * at «Del»-verktøyet har delt en kanal og brukeren endrer dimensjon på den ene
+ * halvdelen. Samme prinsipp som `seedContinuation` (PdfCanvas.tsx) allerede bruker når
+ * en fortsettelse får en annen dimensjon enn røret den fortsetter fra – her generalisert
+ * til å gjelde ETTERPÅ-endringer også, ikke bare i det øyeblikket linjen tegnes.
+ * Tre eller flere segmenter i samme punkt er en avgreining (har alt sin egen del) og
+ * behandles bevisst ikke her. */
+function syncTransitionsAtJoints(
+  lines: LineEntity[],
+  transitions: TransitionEntity[],
+  currentPage: number,
+  changedIds: Set<string>,
+): TransitionEntity[] {
+  const pageLines = lines.filter((l) => l.page === currentPage);
+  let out = transitions;
+  for (const line of pageLines) {
+    if (!changedIds.has(line.id)) continue;
+    const n = line.points.length;
+    const joints: [number, number][] = [
+      [line.points[0], line.points[1]],
+      [line.points[n - 2], line.points[n - 1]],
+    ];
+    for (const [jx, jy] of joints) {
+      const at = pageLines.filter((l) => {
+        const m = l.points.length;
+        return (
+          (Math.abs(l.points[0] - jx) < JOINT_EPS && Math.abs(l.points[1] - jy) < JOINT_EPS) ||
+          (Math.abs(l.points[m - 2] - jx) < JOINT_EPS && Math.abs(l.points[m - 1] - jy) < JOINT_EPS)
+        );
+      });
+      if (at.length !== 2) continue; // 1 = fri ende, ≥3 = avgreining – ikke en overgang
+      const other = at.find((l) => l.id !== line.id);
+      if (!other || other.subId !== line.subId || other.material !== line.material) continue;
+
+      const i = out.findIndex(
+        (t) =>
+          t.page === line.page &&
+          t.subId === line.subId &&
+          Math.abs(t.x - jx) < JOINT_EPS &&
+          Math.abs(t.y - jy) < JOINT_EPS,
+      );
+      if (other.dimension === line.dimension) {
+        // Ikke lenger en dimensjonsendring → fjern en ev. overgang, ellers ville
+        // mengdelisten fått en meningsløs «Ø200 → Ø200»-rad.
+        if (i >= 0) out = out.filter((_, k) => k !== i);
+        continue;
+      }
+      const patch = {
+        subId: line.subId,
+        material: line.material,
+        fromDimension: other.dimension,
+        toDimension: line.dimension,
+        x: jx,
+        y: jy,
+      };
+      out =
+        i >= 0
+          ? out.map((t, k) => (k === i ? { ...t, ...patch } : t))
+          : [...out, { id: nextId('trans'), page: line.page, ...patch }];
+    }
+  }
+  return out;
+}
+
+/** Hva et flytte-/kopier-steg (Flytt/Kopier-verktøyet, eller piltastene) skal virke på.
+ * `planMove` regner ut id-settene ÉN gang ved gest-start (den kostbare
+ * sammenhengs-analysen kjøres ikke på nytt for hver musebevegelse); `applyMovePlan`
+ * er en ren funksjon som brukes av BÅDE spøkelses-forhåndsvisningen og selve
+ * commit-en, slik at de aldri kan vise/gjøre forskjellige ting. */
+export interface MovePlan {
+  /** 'single' = nøyaktig én linje valgt → vinkelbevarende semantikk (moveSingleLine).
+   * 'rigid' = alt annet → hele den sammenhengende strekningen + resten av utvalget
+   * translateres rigid (nudgeSelected-semantikk). */
+  mode: 'single' | 'rigid';
+  /** Kun for 'single'. */
+  lineId?: string;
+  /** Linjer som flyttes (for 'single': kun lineId selv). */
+  lineIds: Set<string>;
+  bendIds: Set<string>;
+  transitionIds: Set<string>;
+  branchIds: Set<string>;
+  tagIds: Set<string>;
+  symbolIds: Set<string>;
+  clampIds: Set<string>;
+  annotationIds: Set<string>;
+  measurementIds: Set<string>;
+}
+
+/** Delmengden av AppState som planMove/applyMovePlan faktisk trenger. Holdt smalt
+ * (i stedet for hele AppState) slik at PdfCanvas' spøkelses-forhåndsvisning kan bygge
+ * et lett øyeblikksbilde fra sine egne `useStore`-selektorer, uten å måtte late som om
+ * den har alle de 130+ feltene på det fulle AppState. */
+export type MoveSourceState = Pick<
+  AppState,
+  | 'lines'
+  | 'symbols'
+  | 'transitions'
+  | 'branches'
+  | 'bends'
+  | 'annotations'
+  | 'tags'
+  | 'clamps'
+  | 'measurements'
+  | 'currentPage'
+  | 'scale'
+  | 'multiSelection'
+  | 'selectedId'
+  | 'selectedKind'
+>;
+
+/** Bestemmer HVA som skal flyttes/kopieres for gjeldende utvalg. Speiler den gamle
+ * nudgeSelected-seedingen, men tetter tre hull: (1) markører midt på kroppen til en
+ * flyttet linje følger med (samme onBody-idiom som moveSingleLine bruker til vanlig
+ * piltast-flytting av én linje), (2) frittstående valgte symboler/tagger/klammer/
+ * annotasjoner/målinger flyttes også – ikke bare de som henger på en flyttet linje, og
+ * (3) et utvalg helt uten linjer gir fortsatt en gyldig plan. */
+export function planMove(s: MoveSourceState, opts: { forceRigid?: boolean } = {}): MovePlan | null {
+  const ids = new Set(s.multiSelection);
+  if (s.selectedId) ids.add(s.selectedId);
+  if (ids.size === 0) return null;
+
+  const pageLines = s.lines.filter((l) => l.page === s.currentPage);
+  const seedLineIds = Array.from(ids).filter((id) => pageLines.some((l) => l.id === id));
+
+  // Vinkelbevarende én-linje-semantikk kun når AKKURAT ÉN linje er valgt via selectedId
+  // (ingen flervalg) – speiler nøyaktig det gamle skillet i piltast-håndteringen
+  // (`multiSelection.size === 0 && selectedKind === 'line'`). Et flervalg som
+  // tilfeldigvis bare inneholder én linje (f.eks. et gummibånd rundt ett segment)
+  // skal fortsatt gi rigid strekningsflytting, akkurat som nudgeSelected alltid har
+  // gjort – derav sjekken på `s.multiSelection.size === 0`, ikke bare antall id-er.
+  // `forceRigid` lar nudgeSelected eksplisitt be om rigid modus uansett.
+  if (!opts.forceRigid && s.multiSelection.size === 0 && seedLineIds.length === 1) {
+    return {
+      mode: 'single',
+      lineId: seedLineIds[0],
+      lineIds: new Set(seedLineIds),
+      bendIds: new Set(),
+      transitionIds: new Set(),
+      branchIds: new Set(),
+      tagIds: new Set(),
+      symbolIds: new Set(),
+      clampIds: new Set(),
+      annotationIds: new Set(),
+      measurementIds: new Set(),
+    };
+  }
+
+  const lineIds = findConnectedLineIds(pageLines, seedLineIds);
+  const movingLines = pageLines.filter((l) => lineIds.has(l.id));
+
+  // Alle punkter (før flytting) på linjene som flyttes – brukes til å finne hvilke
+  // bend-/overgang-/avgreiningsmarkører som satt akkurat på disse skjøtene.
+  const oldPoints: { x: number; y: number }[] = [];
+  for (const l of movingLines) {
+    for (let i = 0; i + 1 < l.points.length; i += 2) oldPoints.push({ x: l.points[i], y: l.points[i + 1] });
+  }
+  const nearOld = (x: number, y: number, eps = 0.5) =>
+    oldPoints.some((p) => Math.abs(p.x - x) < eps && Math.abs(p.y - y) < eps);
+
+  // Mid-kropp-markører (påstikk/overganger) på en av de flyttede linjene – samme
+  // halvbredde-idiom som moveSingleLine sin onBody, sjekket mot ALLE flyttede linjer.
+  const onBodyOfMoving = (x: number, y: number, subId: string, material: string): boolean =>
+    movingLines.some((l) => {
+      if (l.subId !== subId || l.material !== material) return false;
+      const halfW = Math.max(mmToPx(dimensionDiameterMm(l.dimension), s.scale.metersPerPixel) / 2, 4);
+      const cp = closestPointOnPolyline(l.points, { x, y });
+      return cp != null && cp.distance <= halfW;
+    });
+
+  const onPage = <T extends { page: number }>(arr: T[]) => arr.filter((e) => e.page === s.currentPage);
+
+  const bendIds = new Set(
+    onPage(s.bends)
+      .filter((b) => ids.has(b.id) || nearOld(b.x, b.y))
+      .map((b) => b.id),
+  );
+  const transitionIds = new Set(
+    onPage(s.transitions)
+      .filter((t) => ids.has(t.id) || nearOld(t.x, t.y) || onBodyOfMoving(t.x, t.y, t.subId, t.material))
+      .map((t) => t.id),
+  );
+  const branchIds = new Set(
+    onPage(s.branches)
+      .filter((b) => ids.has(b.id) || nearOld(b.x, b.y) || onBodyOfMoving(b.x, b.y, b.subId, b.material))
+      .map((b) => b.id),
+  );
+  const tagIds = new Set(
+    onPage(s.tags)
+      .filter((t) => ids.has(t.id) || lineIds.has(t.lineId))
+      .map((t) => t.id),
+  );
+  const symbolIds = new Set(
+    onPage(s.symbols)
+      .filter((sy) => ids.has(sy.id) || (sy.mountedLineId != null && lineIds.has(sy.mountedLineId)))
+      .map((sy) => sy.id),
+  );
+  const clampIds = new Set(
+    onPage(s.clamps)
+      .filter((c) => ids.has(c.id) || lineIds.has(c.lineId))
+      .map((c) => c.id),
+  );
+  const annotationIds = new Set(
+    onPage(s.annotations)
+      .filter((a) => ids.has(a.id))
+      .map((a) => a.id),
+  );
+  const measurementIds = new Set(
+    onPage(s.measurements)
+      .filter((m) => ids.has(m.id))
+      .map((m) => m.id),
+  );
+
+  if (
+    lineIds.size === 0 &&
+    bendIds.size === 0 &&
+    transitionIds.size === 0 &&
+    branchIds.size === 0 &&
+    tagIds.size === 0 &&
+    symbolIds.size === 0 &&
+    clampIds.size === 0 &&
+    annotationIds.size === 0 &&
+    measurementIds.size === 0
+  ) {
+    return null;
+  }
+
+  return {
+    mode: 'rigid',
+    lineIds,
+    bendIds,
+    transitionIds,
+    branchIds,
+    tagIds,
+    symbolIds,
+    clampIds,
+    annotationIds,
+    measurementIds,
+  };
+}
+
+type MoveDrawPatch = Pick<
+  AppState,
+  'lines' | 'symbols' | 'transitions' | 'branches' | 'bends' | 'tags' | 'clamps' | 'annotations' | 'measurements'
+>;
+
+/** Ren funksjon: regner ut hvordan tegnedataene ser ut etter at `plan` er forskjøvet
+ * med (dx,dy) – uten å mutere state. Brukes for både spøkelses-forhåndsvisningen
+ * (matet med det rå utvalget) og selve commit-en (via moveSelection). */
+export function applyMovePlan(s: MoveSourceState, plan: MovePlan, dx: number, dy: number): MoveDrawPatch {
+  if (plan.mode === 'single' && plan.lineId) {
+    return applySingleLineMove(s, plan.lineId, dx, dy);
+  }
+
+  const { lineIds, bendIds, transitionIds, branchIds, tagIds, symbolIds, clampIds, annotationIds, measurementIds } =
+    plan;
+  const shift = (pts: number[]) => pts.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
+
+  return {
+    lines: s.lines.map((l) => (lineIds.has(l.id) ? { ...l, points: shift(l.points) } : l)),
+    bends: s.bends.map((b) => (bendIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+    transitions: s.transitions.map((t) => (transitionIds.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
+    branches: s.branches.map((b) => (branchIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
+    tags: s.tags.map((t) =>
+      tagIds.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy } : t,
+    ),
+    symbols: s.symbols.map((sy) => (symbolIds.has(sy.id) ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy)),
+    clamps: s.clamps.map((c) => (clampIds.has(c.id) ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
+    annotations: s.annotations.map((a) => {
+      if (!annotationIds.has(a.id)) return a;
+      return {
+        ...a,
+        x: a.x + dx,
+        y: a.y + dy,
+        anchorX: a.anchorX != null ? a.anchorX + dx : undefined,
+        anchorY: a.anchorY != null ? a.anchorY + dy : undefined,
+        points: a.points ? shift(a.points) : undefined,
+      };
+    }),
+    measurements: s.measurements.map((m) => (measurementIds.has(m.id) ? { ...m, points: shift(m.points) } : m)),
+  };
+}
+
+/** Vinkelbevarende flytting av én enkelt linje: linjen selv beholder sin retning
+ * (translateres), mens naboer beholder SIN retning – kun det delte skjøtpunktet
+ * flyttes til skjæringen mellom de to linjene. Dette er selve algoritmen som lå i
+ * moveSingleLine; trukket ut hit som en ren funksjon slik at Flytt-verktøyets
+ * spøkelses-forhåndsvisning kan bruke nøyaktig samme utregning som commit-en. */
+function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy: number): MoveDrawPatch {
+  const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
+  if (!line) {
+    return {
+      lines: s.lines,
+      symbols: s.symbols,
+      transitions: s.transitions,
+      branches: s.branches,
+      bends: s.bends,
+      tags: s.tags,
+      clamps: s.clamps,
+      annotations: s.annotations,
+      measurements: s.measurements,
+    };
+  }
+
+  const pageLines = s.lines.filter((l) => l.page === line.page);
+  const eps = 0.5;
+  const near = (ax: number, ay: number, bx: number, by: number) =>
+    Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
+
+  // Retningen til linjen som flyttes (ende-til-ende). Etter flytting skal L beholde
+  // denne retningen (L-ny-linje = L translatert med (dx,dy)), slik at vinkelen mot
+  // naboene ikke endres.
+  const n = line.points.length;
+  const dirL = { x: line.points[n - 2] - line.points[0], y: line.points[n - 1] - line.points[1] };
+  const oldEndpoints = [
+    { x: line.points[0], y: line.points[1] },
+    { x: line.points[n - 2], y: line.points[n - 1] },
+  ];
+
+  // For hvert endepunkt E på L: beregn hvor E havner (newEndpoint), og hvilke
+  // nabo-vertekser som skal flyttes dit. Naboer beholder sin egen retning – kun deres
+  // delte skjøt følger med – slik at bend-vinklene bevares nøyaktig.
+  const newEndpoint = oldEndpoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+  const neighborMoves: { lineId: string; vertexIndex: number; x: number; y: number }[] = [];
+
+  oldEndpoints.forEach((E, k) => {
+    const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
+    for (const other of pageLines) {
+      if (other.id === lineId) continue;
+      const on = other.points.length;
+      for (const i of [0, on - 2]) {
+        if (near(other.points[i], other.points[i + 1], E.x, E.y)) {
+          neighbors.push({ line: other, vertexIndex: i });
+        }
+      }
+    }
+
+    if (neighbors.length === 1) {
+      const nb = neighbors[0];
+      const nn = nb.line.points.length;
+      // Naboens faste fjern-ende (motsatt av skjøten) og dens opprinnelige retning.
+      const sharedIsStart = nb.vertexIndex === 0;
+      const farX = sharedIsStart ? nb.line.points[nn - 2] : nb.line.points[0];
+      const farY = sharedIsStart ? nb.line.points[nn - 1] : nb.line.points[1];
+      const dirN = { x: E.x - farX, y: E.y - farY };
+      // Nytt skjøtpunkt = skjæring mellom L-ny-linje og naboens faste linje.
+      const hit = lineIntersect({ x: E.x + dx, y: E.y + dy }, dirL, { x: farX, y: farY }, dirN);
+      const target = hit ?? { x: E.x + dx, y: E.y + dy }; // fallback: parallell/kolineær → strekk
+      newEndpoint[k] = target;
+      neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: target.x, y: target.y });
+    } else if (neighbors.length >= 2) {
+      // T-rør/forgrening: bevar ikke vinkel – flytt skjøten og dra alle naboer dit.
+      for (const nb of neighbors) {
+        neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: E.x + dx, y: E.y + dy });
+      }
+      newEndpoint[k] = { x: E.x + dx, y: E.y + dy };
+    }
+    // neighbors.length === 0 → fri ende: newEndpoint[k] er allerede E+(dx,dy).
+  });
+
+  const movesByLine = new Map<string, { vertexIndex: number; x: number; y: number }[]>();
+  for (const m of neighborMoves) {
+    const arr = movesByLine.get(m.lineId) ?? [];
+    arr.push({ vertexIndex: m.vertexIndex, x: m.x, y: m.y });
+    movesByLine.set(m.lineId, arr);
+  }
+
+  // Hvor havner et gammelt skjøtpunkt? Brukt for å flytte markører til det NYE
+  // skjøtpunktet (ikke bare med (dx,dy)), slik at de blir liggende riktig.
+  const remap = (x: number, y: number): { x: number; y: number } | null => {
+    for (let k = 0; k < oldEndpoints.length; k++) {
+      if (near(oldEndpoints[k].x, oldEndpoints[k].y, x, y)) return newEndpoint[k];
+    }
+    return null;
+  };
+
+  // Påstikk/overganger sitter ofte MIDT PÅ kroppen til den flyttede linjen (ikke i et
+  // endepunkt), så `remap` alene fanger dem ikke – de ville blitt liggende igjen mens
+  // kanalen gled ut under dem. Test derfor (mot linjens GAMLE geometri, før flytting)
+  // om markøren ligger på selve kroppen, innenfor en halv rørbredde + margin, og krev
+  // samme subId/material for å unngå å plukke opp en markør på en parallell nabo-kanal.
+  const halfW = Math.max(mmToPx(dimensionDiameterMm(line.dimension), s.scale.metersPerPixel) / 2, 4);
+  const onBody = (x: number, y: number, subId: string, material: string): boolean => {
+    if (subId !== line.subId || material !== line.material) return false;
+    const cp = closestPointOnPolyline(line.points, { x, y });
+    return cp != null && cp.distance <= halfW;
+  };
+
+  return {
+    lines: s.lines.map((l) => {
+      if (l.id === lineId) {
+        // Endepunktene settes til newEndpoint (skjæring eller translatert) – begge ligger
+        // på L-ny-linje, så L beholder retningen. Ev. indre punkter translateres.
+        const pts = [...l.points];
+        pts[0] = newEndpoint[0].x;
+        pts[1] = newEndpoint[0].y;
+        pts[pts.length - 2] = newEndpoint[1].x;
+        pts[pts.length - 1] = newEndpoint[1].y;
+        for (let i = 2; i + 1 < pts.length - 2; i += 2) {
+          pts[i] += dx;
+          pts[i + 1] += dy;
+        }
+        return { ...l, points: pts };
+      }
+      const moves = movesByLine.get(l.id);
+      if (!moves) return l;
+      const pts = [...l.points];
+      for (const mv of moves) {
+        pts[mv.vertexIndex] = mv.x;
+        pts[mv.vertexIndex + 1] = mv.y;
+      }
+      return { ...l, points: pts };
+    }),
+    // Skjøt-markører flyttes til det nye skjøtpunktet (vinkel bevart ⇒ angleDeg gyldig).
+    bends: s.bends.map((b) => {
+      const r = remap(b.x, b.y);
+      return r ? { ...b, x: r.x, y: r.y } : b;
+    }),
+    transitions: s.transitions.map((t) => {
+      const r = remap(t.x, t.y);
+      if (r) return { ...t, x: r.x, y: r.y };
+      return onBody(t.x, t.y, t.subId, t.material) ? { ...t, x: t.x + dx, y: t.y + dy } : t;
+    }),
+    branches: s.branches.map((b) => {
+      const r = remap(b.x, b.y);
+      if (r) return { ...b, x: r.x, y: r.y };
+      return onBody(b.x, b.y, b.subId, b.material) ? { ...b, x: b.x + dx, y: b.y + dy } : b;
+    }),
+    // Tagger og montert utstyr på den flyttede linjen følger med.
+    tags: s.tags.map((t) =>
+      t.lineId === lineId ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy } : t,
+    ),
+    symbols: s.symbols.map((sy) => (sy.mountedLineId === lineId ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy)),
+    clamps: s.clamps.map((c) => (c.lineId === lineId ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
+    annotations: s.annotations,
+    measurements: s.measurements,
+  };
 }
 
 export interface ViewTransform {
@@ -138,6 +583,10 @@ interface PersistedSettings {
   clampRodDiameter: number;
   /** Standard gjengestag-lengde (mm) for nye klammer. */
   clampRodLengthMm: number;
+  /** Gruppering/sortering av mengdelista – gjelder også Excel/PDF-eksport, se quantityGroups.ts. */
+  quantityGroupBy: GroupBy;
+  quantitySortBy: SortBy;
+  quantitySortDir: SortDir;
 }
 
 function loadSettings(): PersistedSettings {
@@ -192,6 +641,13 @@ function loadSettings(): PersistedSettings {
       clampRodDiameter:
         typeof parsed.clampRodDiameter === 'number' ? parsed.clampRodDiameter : DEFAULT_CLAMP_ROD_DIAMETER,
       clampRodLengthMm: typeof parsed.clampRodLengthMm === 'number' ? parsed.clampRodLengthMm : CLAMP_ROD_LENGTH_MM,
+      quantityGroupBy:
+        parsed.quantityGroupBy === 'dimension' || parsed.quantityGroupBy === 'material'
+          ? parsed.quantityGroupBy
+          : 'system',
+      quantitySortBy:
+        parsed.quantitySortBy === 'length' || parsed.quantitySortBy === 'count' ? parsed.quantitySortBy : 'name',
+      quantitySortDir: parsed.quantitySortDir === 'desc' ? 'desc' : 'asc',
     };
   } catch {
     return defaultSettings();
@@ -213,6 +669,9 @@ function defaultSettings(): PersistedSettings {
     clampSpacing: { ...DEFAULT_CLAMP_SPACING },
     clampRodDiameter: DEFAULT_CLAMP_ROD_DIAMETER,
     clampRodLengthMm: CLAMP_ROD_LENGTH_MM,
+    quantityGroupBy: 'system',
+    quantitySortBy: 'name',
+    quantitySortDir: 'asc',
   };
 }
 
@@ -242,6 +701,9 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     clampSpacing: s.clampSpacing,
     clampRodDiameter: s.clampRodDiameter,
     clampRodLengthMm: s.clampRodLengthMm,
+    quantityGroupBy: s.quantityGroupBy,
+    quantitySortBy: s.quantitySortBy,
+    quantitySortDir: s.quantitySortDir,
     ...overrides,
   });
 }
@@ -334,6 +796,10 @@ interface AppState {
   clampRodDiameter: number;
   /** Standard gjengestag-lengde (mm) for nye klammer. */
   clampRodLengthMm: number;
+  /** Gruppering/sortering av mengdelista – gjelder også Excel/PDF-eksport. */
+  quantityGroupBy: GroupBy;
+  quantitySortBy: SortBy;
+  quantitySortDir: SortDir;
   /** Sist brukt stil for nye annotasjoner/markup, per type. Én felles form (ikke alle
    * felt er relevante for alle typer – f.eks. leser tekst-typene kun fontSize, mens
    * former leser strokeWidth) holder typingen enkel og gjenbrukbar. */
@@ -359,6 +825,11 @@ interface AppState {
 
   // Tilpass-til-skjerm-signal (økes for å be canvas refitte)
   fitSignal: number;
+
+  /** Fanget PNG (data-URL) av hele tegningen, satt rett før «Skriv ut / PDF» kalles –
+   * PrintableReport viser den øverst i utskriften. Nullstilles etterpå (ikke persistert,
+   * kun et forbigående utskrifts-øyeblikksbilde). */
+  printImage: string | null;
 
   // Actions
   beginLoad: () => void;
@@ -411,9 +882,12 @@ interface AppState {
     systemId?: string,
     anchor?: { x: number; y: number },
   ) => void;
-  /** Splitter et rett 2-punkts segment i to nye segmenter med et delt punkt
-   * (brukt når man klikker midtpunkt-håndtaket for å legge til et knekkpunkt). */
-  splitLineAt: (id: string, x: number, y: number) => void;
+  /** Deler en linje i to ved (x,y) – brukt både av midtpunkt-håndtaket (legge til et
+   * knekkpunkt) og «Del»-verktøyet (klikk hvor som helst på et rør/kanal for å dele
+   * det, typisk for å endre dimensjon fra delepunktet – se `updateLineProps`, som
+   * automatisk setter inn en overgang der dimensjonen deretter endres). `selectHalf`
+   * velger hvilken halvdel (om noen) som skal markeres etterpå. */
+  splitLineAt: (id: string, x: number, y: number, selectHalf?: 'a' | 'b' | 'none') => void;
   updateLinePoints: (id: string, points: number[]) => void;
   updateLineProps: (
     id: string,
@@ -514,6 +988,11 @@ interface AppState {
    * monterte symboler og tagger på den flyttede linjen følger med – slik at kun
    * den valgte kanalen flyttes mens resten fortsatt henger sammen. */
   moveSingleLine: (lineId: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
+  /** Flytter HELE gjeldende utvalg (linjer, utstyr, markup, mål – ikke bare linjer) med
+   * (dx,dy), med samme koblingsbevaring som Flytt-verktøyet og piltastene bruker.
+   * Dispatcher internt til enten den vinkelbevarende én-linje-semantikken eller den
+   * rigide fler-entitets-semantikken, avhengig av hva som er valgt (se planMove). */
+  moveSelection: (dx: number, dy: number, recordAsNewStep?: boolean) => void;
 
   setStandardLength: (kind: 'pipe' | 'duct', mm: number) => void;
   setAutoInsertClamps: (on: boolean) => void;
@@ -521,6 +1000,9 @@ interface AppState {
   setClampRodDiameter: (mm: number) => void;
   setClampRodLengthMm: (mm: number) => void;
   updateClampProps: (id: string, patch: Partial<Pick<ClampEntity, 'rodDiameter' | 'rodLengthMm'>>) => void;
+  setQuantityGroupBy: (v: GroupBy) => void;
+  setQuantitySortBy: (v: SortBy) => void;
+  setQuantitySortDir: (v: SortDir) => void;
   setPipeRenderStyle: (style: PipeRenderStyle) => void;
   setTheme: (theme: Theme) => void;
   openSettingsDialog: () => void;
@@ -548,11 +1030,19 @@ interface AppState {
     ids: string[],
     patch: Partial<Pick<LineEntity, 'subId' | 'material' | 'dimension' | 'systemId'>>,
   ) => void;
+  /** Dupliserer hele gjeldende utvalg forskjøvet med (dx,dy) – brukes av
+   * Kopier-verktøyet. Kryssreferanser (tag/klammer → lineId, utstyr →
+   * mountedLineId) remappes til KOPIEN av linjen når linjen selv er med i
+   * utvalget, ellers beholdes referansen til originalen. Ingen auto-utvidelse til
+   * hele den sammenhengende strekningen – kopierer nøyaktig det som er markert,
+   * siden kopiering direkte endrer mengdelisten. Utvalget blir kopiene etterpå. */
+  duplicateSelection: (dx: number, dy: number) => void;
 
   setView: (v: ViewTransform) => void;
   setStageSize: (size: { width: number; height: number }) => void;
   zoomBy: (factor: number) => void;
   requestFit: () => void;
+  setPrintImage: (dataUrl: string | null) => void;
 
   /** Henter alt som kan lagres som JSON for det aktive tilbudet (ikke PDF-bytes/canvas). */
   exportSnapshot: () => TilbudSnapshot;
@@ -657,6 +1147,9 @@ export const useStore = create<AppState>((set, get) => {
   clampSpacing: initialSettings.clampSpacing,
   clampRodDiameter: initialSettings.clampRodDiameter,
   clampRodLengthMm: initialSettings.clampRodLengthMm,
+  quantityGroupBy: initialSettings.quantityGroupBy,
+  quantitySortBy: initialSettings.quantitySortBy,
+  quantitySortDir: initialSettings.quantitySortDir,
   annotationConfig: {
     text: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
     textbox: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
@@ -682,6 +1175,7 @@ export const useStore = create<AppState>((set, get) => {
   calibrationDistancePx: null,
 
   fitSignal: 0,
+  printImage: null,
 
   beginLoad: () => set({ isLoading: true, error: null }),
 
@@ -734,7 +1228,7 @@ export const useStore = create<AppState>((set, get) => {
   setPage: (n) => {
     const { numPages } = get();
     const page = Math.min(Math.max(1, n), numPages || 1);
-    set({ currentPage: page, selectedId: null, selectedKind: null });
+    set({ currentPage: page, selectedId: null, selectedKind: null, multiSelection: new Set<string>() });
   },
 
   setScale: (s) => set({ scale: s }),
@@ -744,7 +1238,15 @@ export const useStore = create<AppState>((set, get) => {
   setCalibrationDistance: (px) =>
     set({ calibrationDistancePx: px, scaleDialogOpen: true, scaleDialogTab: 'calibrate' }),
 
-  setTool: (t) => set({ tool: t, selectedId: null, selectedKind: null }),
+  setTool: (t) => {
+    // Flytt/Kopier/Del jobber PÅ det gjeldende utvalget – å nullstille det her ville
+    // gjort verktøyene ubrukelige. Alle andre verktøy nullstiller utvalget som før.
+    if (t === 'move' || t === 'copy' || t === 'split') {
+      set({ tool: t });
+      return;
+    }
+    set({ tool: t, selectedId: null, selectedKind: null });
+  },
   select: (id, kind) => set({ selectedId: id, selectedKind: kind }),
   clearSelection: () => set({ selectedId: null, selectedKind: null }),
 
@@ -858,17 +1360,47 @@ export const useStore = create<AppState>((set, get) => {
     }));
   },
 
-  splitLineAt: (id, x, y) => {
+  splitLineAt: (id, x, y, selectHalf = 'none') => {
     const line = get().lines.find((l) => l.id === id);
     if (!line) return;
+    // Bruk closestPointOnPolyline i stedet for å anta et rett 2-punkts segment: da
+    // fungerer delingen også på eldre fler-punkts linjer (den gamle koden kastet
+    // stille alle punkter etter de fire første).
+    const cp = closestPointOnPolyline(line.points, { x, y });
+    if (!cp) return;
+    const n = line.points.length;
+    const eps = 0.5;
+    const atVertex = (i: number) => Math.abs(x - line.points[i]) < eps && Math.abs(y - line.points[i + 1]) < eps;
+    if (atVertex(0) || atVertex(n - 2)) return; // ville gitt en null-lang halvdel
     recordHistory();
-    const [x0, y0, x1, y1] = line.points;
-    const a: LineEntity = { ...line, id: nextId('line'), points: [x0, y0, x, y] };
-    const b: LineEntity = { ...line, id: nextId('line'), points: [x, y, x1, y1] };
+
+    const cut = cp.segIndex * 2;
+    const aPoints = [...line.points.slice(0, cut + 2), x, y];
+    const bPoints = [x, y, ...line.points.slice(cut + 2)];
+    const a: LineEntity = { ...line, id: nextId('line'), points: aPoints };
+    const b: LineEntity = { ...line, id: nextId('line'), points: bPoints };
+
+    // Hvilken halvdel ligger nærmest en markør? Uten dette ble tagger/klammer/montert
+    // utstyr liggende igjen med en lineId som ikke lenger finnes (den gamle koden delte
+    // aldri opp referansene) – klammeret havnet da i mengdelisten uten gyldig
+    // underkategori/materiale, og taggen forsvant fra lerretet.
+    const halfFor = (px: number, py: number): string =>
+      (closestPointOnPolyline(aPoints, { x: px, y: py })?.distance ?? Infinity) <=
+      (closestPointOnPolyline(bPoints, { x: px, y: py })?.distance ?? Infinity)
+        ? a.id
+        : b.id;
+
     set((s) => ({
       lines: [...s.lines.filter((l) => l.id !== id), a, b],
-      selectedId: null,
-      selectedKind: null,
+      tags: s.tags.map((t) => (t.lineId === id ? { ...t, lineId: halfFor(t.x, t.y) } : t)),
+      clamps: s.clamps.map((c) => (c.lineId === id ? { ...c, lineId: halfFor(c.x, c.y) } : c)),
+      symbols: s.symbols.map((sy) =>
+        sy.mountedLineId === id ? { ...sy, mountedLineId: halfFor(sy.x, sy.y) } : sy,
+      ),
+      selectedId: selectHalf === 'a' ? a.id : selectHalf === 'b' ? b.id : null,
+      selectedKind: selectHalf === 'none' ? null : 'line',
+      // Den gamle id-en kan ligge i flervalget – ville ellers blitt en død id der.
+      multiSelection: new Set<string>(),
     }));
   },
 
@@ -879,8 +1411,8 @@ export const useStore = create<AppState>((set, get) => {
 
   updateLineProps: (id, patch) => {
     recordHistory();
-    set((s) => ({
-      lines: s.lines.map((l) => {
+    set((s) => {
+      const lines = s.lines.map((l) => {
         if (l.id !== id) return l;
         const next = { ...l, ...patch };
         // bytter man underkategori, sørg for gyldig materiale/dimensjon
@@ -890,8 +1422,14 @@ export const useStore = create<AppState>((set, get) => {
           if (!sub.dimensions.includes(next.dimension)) next.dimension = sub.dimensions[0];
         }
         return next;
-      }),
-    }));
+      });
+      // Endret dimensjon/underkategori kan gjøre at en skjøt til en nabo nå har (eller
+      // ikke lenger har) ulik dimensjon – typisk rett etter at «Del»-verktøyet har delt
+      // en kanal og man endrer dimensjon på den ene halvdelen. Sett inn/fjern overgangen
+      // i skjøten deretter (se syncTransitionsAtJoints).
+      if (patch.dimension === undefined && patch.subId === undefined) return { lines };
+      return { lines, transitions: syncTransitionsAtJoints(lines, s.transitions, s.currentPage, new Set([id])) };
+    });
   },
 
   addSymbol: (type, x, y, rotation = 0, mountedLineId, systemId) => {
@@ -1251,6 +1789,22 @@ export const useStore = create<AppState>((set, get) => {
     set((s) => ({ clamps: s.clamps.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
   },
 
+  setQuantityGroupBy: (v) =>
+    set((s) => {
+      persistSettings(s, { quantityGroupBy: v });
+      return { quantityGroupBy: v };
+    }),
+  setQuantitySortBy: (v) =>
+    set((s) => {
+      persistSettings(s, { quantitySortBy: v });
+      return { quantitySortBy: v };
+    }),
+  setQuantitySortDir: (v) =>
+    set((s) => {
+      persistSettings(s, { quantitySortDir: v });
+      return { quantitySortDir: v };
+    }),
+
   setPipeRenderStyle: (style) =>
     set((s) => {
       persistSettings(s, { pipeRenderStyle: style });
@@ -1399,12 +1953,142 @@ export const useStore = create<AppState>((set, get) => {
     }));
   },
 
+  duplicateSelection: (dx, dy) => {
+    const s = get();
+    const ids = new Set(s.multiSelection);
+    if (s.selectedId) ids.add(s.selectedId);
+    if (ids.size === 0) return;
+    // Sidefilter: multiSelection tømmes ikke automatisk ved sidebytte i alle
+    // tilfeller, så et gammelt utvalg fra en annen side skal ikke kopieres inn her.
+    const onPage = <T extends { id: string; page: number }>(arr: T[]) =>
+      arr.filter((e) => ids.has(e.id) && e.page === s.currentPage);
+
+    const srcLines = onPage(s.lines);
+    const srcSymbols = onPage(s.symbols);
+    const srcBends = onPage(s.bends);
+    const srcTransitions = onPage(s.transitions);
+    const srcBranches = onPage(s.branches);
+    const srcAnnotations = onPage(s.annotations);
+    const srcTags = onPage(s.tags);
+    const srcClamps = onPage(s.clamps);
+    const srcMeasurements = onPage(s.measurements);
+    const total =
+      srcLines.length +
+      srcSymbols.length +
+      srcBends.length +
+      srcTransitions.length +
+      srcBranches.length +
+      srcAnnotations.length +
+      srcTags.length +
+      srcClamps.length +
+      srcMeasurements.length;
+    if (total === 0) return;
+    recordHistory();
+
+    const shift = (pts: number[]) => pts.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
+
+    // Linjene klones FØRST, slik at gammel→ny-id-kartet finnes når tagger/klammer/
+    // montert utstyr klones og skal peke på sin egen kopi i stedet for originalen.
+    const lineIdMap = new Map<string, string>();
+    const newLines: LineEntity[] = srcLines.map((l) => {
+      const copy = { ...l, id: nextId('line'), points: shift(l.points) };
+      lineIdMap.set(l.id, copy.id);
+      return copy;
+    });
+    // Ble ikke vertslinjen kopiert med (man kopierte f.eks. bare et klammer), beholder
+    // kopien referansen til ORIGINALEN – den er fortsatt gyldig (ingen død id), og
+    // «enda et klammer/en tag på samme kanal» er en helt legitim kopi.
+    const remapLine = (lineId: string) => lineIdMap.get(lineId) ?? lineId;
+
+    const newSymbols: SymbolEntity[] = srcSymbols.map((sy) => ({
+      ...sy,
+      id: nextId('sym'),
+      x: sy.x + dx,
+      y: sy.y + dy,
+      props: { ...sy.props }, // egen props-bag – ikke delt med originalen
+      mountedLineId: sy.mountedLineId ? remapLine(sy.mountedLineId) : sy.mountedLineId,
+    }));
+    const newBends: BendEntity[] = srcBends.map((b) => ({ ...b, id: nextId('bend'), x: b.x + dx, y: b.y + dy }));
+    const newTransitions: TransitionEntity[] = srcTransitions.map((t) => ({
+      ...t,
+      id: nextId('trans'),
+      x: t.x + dx,
+      y: t.y + dy,
+    }));
+    const newBranches: BranchEntity[] = srcBranches.map((b) => ({
+      ...b,
+      id: nextId('branch'),
+      x: b.x + dx,
+      y: b.y + dy,
+    }));
+    const newTags: TagEntity[] = srcTags.map((t) => ({
+      ...t,
+      id: nextId('tag'),
+      lineId: remapLine(t.lineId),
+      x: t.x + dx,
+      y: t.y + dy,
+      labelX: t.labelX + dx,
+      labelY: t.labelY + dy,
+    }));
+    const newClamps: ClampEntity[] = srcClamps.map((c) => ({
+      ...c,
+      id: nextId('clamp'),
+      lineId: remapLine(c.lineId),
+      x: c.x + dx,
+      y: c.y + dy,
+    }));
+    const newAnnotations: AnnotationEntity[] = srcAnnotations.map((a) => ({
+      ...a,
+      id: nextId('note'),
+      x: a.x + dx,
+      y: a.y + dy,
+      anchorX: a.anchorX != null ? a.anchorX + dx : undefined,
+      anchorY: a.anchorY != null ? a.anchorY + dy : undefined,
+      points: a.points ? shift(a.points) : undefined,
+    }));
+    const newMeasurements: MeasurementEntity[] = srcMeasurements.map((m) => ({
+      ...m,
+      id: nextId('measure'),
+      points: shift(m.points),
+    }));
+
+    const created: { id: string; kind: Exclude<SelectedKind, null> }[] = [
+      ...newLines.map((e) => ({ id: e.id, kind: 'line' as const })),
+      ...newSymbols.map((e) => ({ id: e.id, kind: 'symbol' as const })),
+      ...newBends.map((e) => ({ id: e.id, kind: 'bend' as const })),
+      ...newTransitions.map((e) => ({ id: e.id, kind: 'transition' as const })),
+      ...newBranches.map((e) => ({ id: e.id, kind: 'branch' as const })),
+      ...newAnnotations.map((e) => ({ id: e.id, kind: 'annotation' as const })),
+      ...newTags.map((e) => ({ id: e.id, kind: 'tag' as const })),
+      ...newClamps.map((e) => ({ id: e.id, kind: 'clamp' as const })),
+      ...newMeasurements.map((e) => ({ id: e.id, kind: 'measurement' as const })),
+    ];
+    const single = created.length === 1 ? created[0] : null;
+
+    set((st) => ({
+      lines: [...st.lines, ...newLines],
+      symbols: [...st.symbols, ...newSymbols],
+      bends: [...st.bends, ...newBends],
+      transitions: [...st.transitions, ...newTransitions],
+      branches: [...st.branches, ...newBranches],
+      annotations: [...st.annotations, ...newAnnotations],
+      tags: [...st.tags, ...newTags],
+      clamps: [...st.clamps, ...newClamps],
+      measurements: [...st.measurements, ...newMeasurements],
+      // Kopiene blir det nye utvalget: en ny kopi-operasjon gjentar dermed
+      // forskyvningen videre, og egenskapspanelet redigerer kopien, ikke originalen.
+      multiSelection: single ? new Set<string>() : new Set(created.map((c) => c.id)),
+      selectedId: single ? single.id : null,
+      selectedKind: single ? single.kind : null,
+    }));
+  },
+
   updateManyLineProps: (ids, patch) => {
     if (ids.length === 0) return;
     recordHistory();
     const idSet = new Set(ids);
-    set((s) => ({
-      lines: s.lines.map((l) => {
+    set((s) => {
+      const lines = s.lines.map((l) => {
         if (!idSet.has(l.id)) return l;
         const next = { ...l, ...patch };
         if (patch.subId) {
@@ -1413,196 +2097,45 @@ export const useStore = create<AppState>((set, get) => {
           if (!sub.dimensions.includes(next.dimension)) next.dimension = sub.dimensions[0];
         }
         return next;
-      }),
-    }));
+      });
+      if (patch.dimension === undefined && patch.subId === undefined) return { lines };
+      return { lines, transitions: syncTransitionsAtJoints(lines, s.transitions, s.currentPage, idSet) };
+    });
   },
 
+  // nudgeSelected/moveSingleLine/moveSelection er nå alle tynne skall over
+  // planMove/applyMovePlan (definert øverst i filen), slik at piltastene og
+  // Flytt-verktøyet garantert bruker nøyaktig samme utregning.
   nudgeSelected: (dx, dy, recordAsNewStep) => {
     const s = get();
-    let seedIds: string[] = [];
-    if (s.multiSelection.size > 0) {
-      seedIds = Array.from(s.multiSelection).filter((id) => s.lines.some((l) => l.id === id));
-    } else if (s.selectedKind === 'line' && s.selectedId) {
-      seedIds = [s.selectedId];
-    }
-    if (seedIds.length === 0) return;
+    // Speiler den historiske semantikken til nudgeSelected: kun linjer sås inn (ikke
+    // frittstående symboler/tagger/klammer), selv om et flervalg skulle inneholde slikt.
+    const lineIds = new Set(
+      s.multiSelection.size > 0
+        ? Array.from(s.multiSelection).filter((id) => s.lines.some((l) => l.id === id))
+        : s.selectedKind === 'line' && s.selectedId
+          ? [s.selectedId]
+          : [],
+    );
+    const plan = planMove({ ...s, multiSelection: lineIds, selectedId: null }, { forceRigid: true });
+    if (!plan) return;
     if (recordAsNewStep) recordHistory();
-
-    const pageLines = s.lines.filter((l) => l.page === s.currentPage);
-    const movingIds = findConnectedLineIds(pageLines, seedIds);
-    // Samle alle punkter (før flytting) på de linjene som flyttes – brukes til å finne
-    // hvilke bend/overgang/avgreining-markører som satt akkurat på disse skjøtene, slik
-    // at de blir med på flyttingen i stedet for å bli liggende igjen på gammel plass.
-    const oldPoints: { x: number; y: number }[] = [];
-    for (const l of pageLines) {
-      if (!movingIds.has(l.id)) continue;
-      for (let i = 0; i + 1 < l.points.length; i += 2) {
-        oldPoints.push({ x: l.points[i], y: l.points[i + 1] });
-      }
-    }
-    const nearOld = (x: number, y: number, eps = 0.5) =>
-      oldPoints.some((p) => Math.abs(p.x - x) < eps && Math.abs(p.y - y) < eps);
-
-    set((st) => ({
-      lines: st.lines.map((l) =>
-        movingIds.has(l.id)
-          ? { ...l, points: l.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) }
-          : l,
-      ),
-      bends: st.bends.map((b) => (nearOld(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
-      transitions: st.transitions.map((t) => (nearOld(t.x, t.y) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
-      branches: st.branches.map((b) => (nearOld(b.x, b.y) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
-      tags: st.tags.map((t) =>
-        movingIds.has(t.lineId)
-          ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy }
-          : t,
-      ),
-      symbols: st.symbols.map((sy) =>
-        sy.mountedLineId && movingIds.has(sy.mountedLineId) ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
-      ),
-      clamps: st.clamps.map((c) => (movingIds.has(c.lineId) ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
-    }));
+    set(applyMovePlan(s, plan, dx, dy));
   },
 
   moveSingleLine: (lineId, dx, dy, recordAsNewStep) => {
     const s = get();
-    const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
-    if (!line) return;
+    if (!s.lines.some((l) => l.id === lineId && l.page === s.currentPage)) return;
     if (recordAsNewStep) recordHistory();
+    set(applyMovePlan(s, { mode: 'single', lineId, lineIds: new Set([lineId]), bendIds: new Set(), transitionIds: new Set(), branchIds: new Set(), tagIds: new Set(), symbolIds: new Set(), clampIds: new Set(), annotationIds: new Set(), measurementIds: new Set() }, dx, dy));
+  },
 
-    const pageLines = s.lines.filter((l) => l.page === line.page);
-    const eps = 0.5;
-    const near = (ax: number, ay: number, bx: number, by: number) =>
-      Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
-
-    // Retningen til linjen som flyttes (ende-til-ende). Etter flytting skal L beholde
-    // denne retningen (L-ny-linje = L translatert med (dx,dy)), slik at vinkelen mot
-    // naboene ikke endres.
-    const n = line.points.length;
-    const dirL = { x: line.points[n - 2] - line.points[0], y: line.points[n - 1] - line.points[1] };
-    const oldEndpoints = [
-      { x: line.points[0], y: line.points[1] },
-      { x: line.points[n - 2], y: line.points[n - 1] },
-    ];
-
-    // For hvert endepunkt E på L: beregn hvor E havner (newEndpoint), og hvilke
-    // nabo-vertekser som skal flyttes dit. Naboer beholder sin egen retning – kun deres
-    // delte skjøt følger med – slik at bend-vinklene bevares nøyaktig.
-    const newEndpoint = oldEndpoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
-    const neighborMoves: { lineId: string; vertexIndex: number; x: number; y: number }[] = [];
-
-    oldEndpoints.forEach((E, k) => {
-      const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
-      for (const other of pageLines) {
-        if (other.id === lineId) continue;
-        const on = other.points.length;
-        for (const i of [0, on - 2]) {
-          if (near(other.points[i], other.points[i + 1], E.x, E.y)) {
-            neighbors.push({ line: other, vertexIndex: i });
-          }
-        }
-      }
-
-      if (neighbors.length === 1) {
-        const nb = neighbors[0];
-        const nn = nb.line.points.length;
-        // Naboens faste fjern-ende (motsatt av skjøten) og dens opprinnelige retning.
-        const sharedIsStart = nb.vertexIndex === 0;
-        const farX = sharedIsStart ? nb.line.points[nn - 2] : nb.line.points[0];
-        const farY = sharedIsStart ? nb.line.points[nn - 1] : nb.line.points[1];
-        const dirN = { x: E.x - farX, y: E.y - farY };
-        // Nytt skjøtpunkt = skjæring mellom L-ny-linje og naboens faste linje.
-        const hit = lineIntersect({ x: E.x + dx, y: E.y + dy }, dirL, { x: farX, y: farY }, dirN);
-        const target = hit ?? { x: E.x + dx, y: E.y + dy }; // fallback: parallell/kolineær → strekk
-        newEndpoint[k] = target;
-        neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: target.x, y: target.y });
-      } else if (neighbors.length >= 2) {
-        // T-rør/forgrening: bevar ikke vinkel – flytt skjøten og dra alle naboer dit.
-        for (const nb of neighbors) {
-          neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: E.x + dx, y: E.y + dy });
-        }
-        newEndpoint[k] = { x: E.x + dx, y: E.y + dy };
-      }
-      // neighbors.length === 0 → fri ende: newEndpoint[k] er allerede E+(dx,dy).
-    });
-
-    const movesByLine = new Map<string, { vertexIndex: number; x: number; y: number }[]>();
-    for (const m of neighborMoves) {
-      const arr = movesByLine.get(m.lineId) ?? [];
-      arr.push({ vertexIndex: m.vertexIndex, x: m.x, y: m.y });
-      movesByLine.set(m.lineId, arr);
-    }
-
-    // Hvor havner et gammelt skjøtpunkt? Brukt for å flytte markører til det NYE
-    // skjøtpunktet (ikke bare med (dx,dy)), slik at de blir liggende riktig.
-    const remap = (x: number, y: number): { x: number; y: number } | null => {
-      for (let k = 0; k < oldEndpoints.length; k++) {
-        if (near(oldEndpoints[k].x, oldEndpoints[k].y, x, y)) return newEndpoint[k];
-      }
-      return null;
-    };
-
-    // Påstikk/overganger sitter ofte MIDT PÅ kroppen til den flyttede linjen (ikke i et
-    // endepunkt), så `remap` alene fanger dem ikke – de ville blitt liggende igjen mens
-    // kanalen gled ut under dem. Test derfor (mot linjens GAMLE geometri, før flytting)
-    // om markøren ligger på selve kroppen, innenfor en halv rørbredde + margin, og krev
-    // samme subId/material for å unngå å plukke opp en markør på en parallell nabo-kanal.
-    const halfW = Math.max(mmToPx(dimensionDiameterMm(line.dimension), s.scale.metersPerPixel) / 2, 4);
-    const onBody = (x: number, y: number, subId: string, material: string): boolean => {
-      if (subId !== line.subId || material !== line.material) return false;
-      const cp = closestPointOnPolyline(line.points, { x, y });
-      return cp != null && cp.distance <= halfW;
-    };
-
-    set((st) => ({
-      lines: st.lines.map((l) => {
-        if (l.id === lineId) {
-          // Endepunktene settes til newEndpoint (skjæring eller translatert) – begge ligger
-          // på L-ny-linje, så L beholder retningen. Ev. indre punkter translateres.
-          const pts = [...l.points];
-          pts[0] = newEndpoint[0].x;
-          pts[1] = newEndpoint[0].y;
-          pts[pts.length - 2] = newEndpoint[1].x;
-          pts[pts.length - 1] = newEndpoint[1].y;
-          for (let i = 2; i + 1 < pts.length - 2; i += 2) {
-            pts[i] += dx;
-            pts[i + 1] += dy;
-          }
-          return { ...l, points: pts };
-        }
-        const moves = movesByLine.get(l.id);
-        if (!moves) return l;
-        const pts = [...l.points];
-        for (const mv of moves) {
-          pts[mv.vertexIndex] = mv.x;
-          pts[mv.vertexIndex + 1] = mv.y;
-        }
-        return { ...l, points: pts };
-      }),
-      // Skjøt-markører flyttes til det nye skjøtpunktet (vinkel bevart ⇒ angleDeg gyldig).
-      bends: st.bends.map((b) => {
-        const r = remap(b.x, b.y);
-        return r ? { ...b, x: r.x, y: r.y } : b;
-      }),
-      transitions: st.transitions.map((t) => {
-        const r = remap(t.x, t.y);
-        if (r) return { ...t, x: r.x, y: r.y };
-        return onBody(t.x, t.y, t.subId, t.material) ? { ...t, x: t.x + dx, y: t.y + dy } : t;
-      }),
-      branches: st.branches.map((b) => {
-        const r = remap(b.x, b.y);
-        if (r) return { ...b, x: r.x, y: r.y };
-        return onBody(b.x, b.y, b.subId, b.material) ? { ...b, x: b.x + dx, y: b.y + dy } : b;
-      }),
-      // Tagger og montert utstyr på den flyttede linjen følger med.
-      tags: st.tags.map((t) =>
-        t.lineId === lineId ? { ...t, x: t.x + dx, y: t.y + dy, labelX: t.labelX + dx, labelY: t.labelY + dy } : t,
-      ),
-      symbols: st.symbols.map((sy) =>
-        sy.mountedLineId === lineId ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy,
-      ),
-      clamps: st.clamps.map((c) => (c.lineId === lineId ? { ...c, x: c.x + dx, y: c.y + dy } : c)),
-    }));
+  moveSelection: (dx, dy, recordAsNewStep = true) => {
+    const s = get();
+    const plan = planMove(s);
+    if (!plan) return;
+    if (recordAsNewStep) recordHistory();
+    set(applyMovePlan(s, plan, dx, dy));
   },
 
   setView: (v) => set({ view: v }),
@@ -1625,6 +2158,7 @@ export const useStore = create<AppState>((set, get) => {
       };
     }),
   requestFit: () => set((s) => ({ fitSignal: s.fitSignal + 1 })),
+  setPrintImage: (dataUrl) => set({ printImage: dataUrl }),
 
   exportSnapshot: () => {
     const s = get();
