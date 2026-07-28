@@ -1184,6 +1184,13 @@ body {
   display: flex;
   gap: 6px;
 }
+/* Markerer gjeldende type når popoveren er åpnet i redigeringsmodus (dobbeltklikk
+   på en eksisterende avgreining) – se BranchChoicePopover/BranchMarker.onDblClick. */
+.branch-choice-actions .btn.active {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #fff;
+}
 
 /* Numerisk avstandsinntasting for Flytt/Kopier-verktøyet (Revit/AutoCAD-stil):
    åpnes ved første siffertast under en pågående gest, klonet fra branch-choice-popover. */
@@ -1728,7 +1735,32 @@ input[type='range'] {
 .printable-report {
   display: none;
 }
+/* Begge sidene i utskriften (tegning + mengdeliste) er brede – A4 liggende. Ingen
+   navngitte sider: brukeren ba om at BEGGE sidene skal være liggende, så det er
+   global orientering vi vil ha, ikke ulik orientering per side. */
+@page {
+  size: A4 landscape;
+  margin: 10mm;
+}
 @media print {
+  /* Tegneappen er ellers et fastlåst fullskjerms arbeidsområde (html/body/#root
+     med height:100%, .app med overflow:hidden – se toppen av denne fila). Uten
+     denne tilbakestillingen blir .printable-report et klemt element i en kolonne
+     med fast høyde og overflow:hidden, og alt etter første skjermhøyde – altså
+     HELE tegningssiden – ble klippet bort. Dette var årsaken til at tegningen
+     ikke kom med i utskriften. */
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .app {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
   .app > *:not(.printable-report) {
     display: none !important;
   }
@@ -1736,7 +1768,7 @@ input[type='range'] {
     display: block;
     color: #000;
     background: #fff;
-    padding: 24px;
+    padding: 0; /* marginene styres nå av @page */
   }
   .printable-report h1 {
     font-size: 18px;
@@ -1767,16 +1799,22 @@ input[type='range'] {
   }
   /* Tegningen (fanget av stageCapture) på egen side FØR mengdelistetabellen. */
   .printable-drawing {
+    break-after: page;
     page-break-after: always;
+    text-align: center;
   }
   .printable-drawing img {
     display: block;
+    width: auto;
+    height: auto;
     max-width: 100%;
-    max-height: 100vh;
+    /* 100vh er udefinert i utskriftskontekst i flere motorer – bruk et absolutt
+       mål i stedet: A4 liggende (297×210mm) minus 2×10mm marg minus overskriften. */
+    max-height: 165mm;
     margin: 0 auto;
-    object-fit: contain;
   }
   .printable-table-page {
+    break-before: auto;
     page-break-before: auto;
   }
 }

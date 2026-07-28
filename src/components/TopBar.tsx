@@ -85,17 +85,37 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   }
 
   /** Fanger hele tegningen som bilde FØR utskrift, slik at PrintableReport kan vise
-   * den på egen side foran mengdeliste-tabellen (window.print() plukker kun opp det
-   * som allerede er malt i DOM-en, så bildet må settes og rekkes å rendres først). */
-  function printReport() {
-    const dataUrl = captureDrawingDataUrl(pageWidth, pageHeight);
+   * den på egen side foran mengdeliste-tabellen. window.print() plukker kun opp det
+   * som ALLEREDE er malt OG DEKODET i DOM-en: to requestAnimationFrame gir React tid
+   * til å rendre <img>, og img.decode() venter til selve data-URL-en er dekodet –
+   * uten dette kunne utskriften starte mot et tomt/udekodet bilde. */
+  async function printReport() {
+    const dataUrl = captureDrawingDataUrl(pageWidth > 0 && pageHeight > 0 ? { width: pageWidth, height: pageHeight } : null);
     setPrintImage(dataUrl);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        window.print();
-        setPrintImage(null);
-      });
-    });
+
+    if (dataUrl) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const img = document.querySelector<HTMLImageElement>('.printable-drawing img');
+      if (img) {
+        try {
+          await img.decode();
+        } catch {
+          // Dekodefeil skal ikke blokkere utskrift av selve mengdelisten.
+        }
+      }
+    }
+
+    // Ikke nullstill bildet før utskriften faktisk er ferdig – gjør man det rett
+    // etter window.print() kan siden rekke å re-rendre uten tegningen mens
+    // utskriftsdialogen fortsatt er åpen.
+    const clear = () => setPrintImage(null);
+    window.addEventListener('afterprint', clear, { once: true });
+    // Sikkerhetsnett: noen nettlesere/plattformer fyrer aldri afterprint.
+    window.setTimeout(() => {
+      window.removeEventListener('afterprint', clear);
+      clear();
+    }, 60000);
+    window.print();
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {

@@ -352,6 +352,394 @@
   overflow: hidden;
 }
 
+/* ── Animert hero-demo (erstatter statisk .site-mock-canvas/-table-innhold) ──
+   Se src/components/site/HeroDemo.tsx. Alle animerte elementer deler NØYAKTIG
+   samme 14s varighet uten egen animation-delay – innbyrdes rekkefølge kodes
+   utelukkende via keyframe-prosent, slik at alt alltid ligger i takt uansett når
+   komponenten monteres. Siste keyframe (100%) = ferdig tegning + full
+   mengdeliste, slik at redusert-bevegelse-regelen øverst i denne fila (som
+   tvinger animation-duration ned til 0.01ms) lander på sluttresultatet i stedet
+   for en tom boks. */
+.hero-demo-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+.hero-demo-duct {
+  fill: none;
+  stroke: url(#heroDuct);
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation-duration: 14s;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+}
+.hero-duct-a {
+  animation-name: hero-duct-a;
+}
+.hero-duct-b {
+  animation-name: hero-duct-b;
+}
+.hero-duct-c {
+  animation-name: hero-duct-c;
+}
+@keyframes hero-duct-a {
+  0%,
+  1% {
+    stroke-dashoffset: 100;
+  }
+  16%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes hero-duct-b {
+  0%,
+  16% {
+    stroke-dashoffset: 100;
+  }
+  27%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes hero-duct-c {
+  0%,
+  27% {
+    stroke-dashoffset: 100;
+  }
+  35%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.hero-demo-crosshair {
+  color: #ffd166;
+  opacity: 0;
+  animation-duration: 14s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+.hero-demo-crosshair circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+.hero-demo-crosshair line {
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+.hero-crosshair-a {
+  offset-path: path('M 40 70 L 250 70');
+  animation-name: hero-crosshair-a, hero-crosshair-a-visibility;
+}
+.hero-crosshair-b {
+  offset-path: path('M 250 70 L 250 160 L 340 160');
+  animation-name: hero-crosshair-b, hero-crosshair-b-visibility;
+}
+.hero-crosshair-c {
+  offset-path: path('M 140 70 L 140 140');
+  animation-name: hero-crosshair-c, hero-crosshair-c-visibility;
+}
+@keyframes hero-crosshair-a {
+  0% {
+    offset-distance: 0%;
+  }
+  16% {
+    offset-distance: 100%;
+  }
+  100% {
+    offset-distance: 100%;
+  }
+}
+@keyframes hero-crosshair-b {
+  0%,
+  16% {
+    offset-distance: 0%;
+  }
+  27% {
+    offset-distance: 100%;
+  }
+  100% {
+    offset-distance: 100%;
+  }
+}
+@keyframes hero-crosshair-c {
+  0%,
+  27% {
+    offset-distance: 0%;
+  }
+  35%,
+  100% {
+    offset-distance: 100%;
+  }
+}
+@keyframes hero-crosshair-a-visibility {
+  0%,
+  15.9% {
+    opacity: 1;
+  }
+  16%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes hero-crosshair-b-visibility {
+  0%,
+  16% {
+    opacity: 0;
+  }
+  16.1%,
+  26.9% {
+    opacity: 1;
+  }
+  27%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes hero-crosshair-c-visibility {
+  0%,
+  27% {
+    opacity: 0;
+  }
+  27.1%,
+  34.9% {
+    opacity: 1;
+  }
+  35%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.hero-demo-equip {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation-duration: 14s;
+  animation-iteration-count: infinite;
+  animation-timing-function: var(--s-spring, ease);
+}
+.hero-demo-equip rect,
+.hero-demo-equip line {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2;
+}
+.hero-demo-airflow {
+  stroke: #39c98c;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+}
+.hero-equip-silencer rect {
+  stroke: #7fb4ff;
+}
+.hero-equip-diffuser rect,
+.hero-equip-diffuser line {
+  stroke: #39c98c;
+}
+.hero-equip-damper {
+  animation-name: hero-pop-in-damper;
+}
+.hero-equip-silencer {
+  animation-name: hero-pop-in-silencer;
+}
+.hero-equip-diffuser {
+  animation-name: hero-pop-in-diffuser;
+}
+@keyframes hero-pop-in-damper {
+  0%,
+  36% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  42%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes hero-pop-in-silencer {
+  0%,
+  40% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  46%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes hero-pop-in-diffuser {
+  0%,
+  44% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  50%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.hero-demo-table {
+  margin-top: 14px;
+  border: 1px solid var(--s-border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.hero-demo-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--s-border);
+  font-size: 12.5px;
+  color: var(--s-text-dim);
+  opacity: 0;
+  transform: translateY(6px);
+  animation-duration: 14s;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-out;
+}
+.hero-demo-row:last-child {
+  border-bottom: none;
+}
+.hero-demo-row strong {
+  color: var(--s-text);
+  font-weight: 600;
+}
+.hero-row-1 {
+  animation-name: hero-row-1;
+}
+.hero-row-2 {
+  animation-name: hero-row-2;
+}
+.hero-row-3 {
+  animation-name: hero-row-3;
+}
+.hero-row-4 {
+  animation-name: hero-row-4;
+}
+@keyframes hero-row-1 {
+  0%,
+  50% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  58%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hero-row-2 {
+  0%,
+  56% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  64%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hero-row-3 {
+  0%,
+  62% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  70%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hero-row-4 {
+  0%,
+  68% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  76%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hero-demo-export {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.hero-demo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--s-border-strong);
+  background: var(--s-surface-2);
+  color: var(--s-text-dim);
+  font-size: 11.5px;
+  font-weight: 500;
+  opacity: 0;
+  transform: scale(1);
+  animation-duration: 14s;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+}
+.hero-chip-excel {
+  animation-name: hero-chip-excel;
+}
+.hero-chip-pdf {
+  animation-name: hero-chip-pdf;
+}
+@keyframes hero-chip-excel {
+  0%,
+  74% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  78% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  84%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes hero-chip-pdf {
+  0%,
+  82% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  86% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  92%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* ── Generisk seksjon ────────────────────────────────────────────────── */
 .site-section {
   padding: 72px 24px;

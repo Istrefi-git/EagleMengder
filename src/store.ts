@@ -540,6 +540,12 @@ export interface PendingBranchChoice {
   x: number;
   y: number;
   angleDeg: number;
+  /** Satt når popoveren redigerer en EKSISTERENDE avgreining (dobbeltklikk på
+   * markøren) i stedet for å opprette en ny – se resolvePendingBranchChoice. */
+  editId?: string;
+  /** Gjeldende type ved redigering (kun satt sammen med editId), brukt til å
+   * markere den aktive knappen i BranchChoicePopover. */
+  currentFittingType?: BranchFittingType;
 }
 
 /** Tegnedata som angre/gjenta opererer på – verktøy/visning/tema er bevisst utelatt. */
@@ -966,6 +972,12 @@ interface AppState {
     x: number,
     y: number,
     angleDeg: number,
+  ) => void;
+  /** Endrer en eksisterende avgreining – i praksis kun fittingType (påstikk↔T-kanal
+   * for kanal, T-rør↔45°-grenrør for rør), satt via dobbeltklikk på markøren. */
+  updateBranch: (
+    id: string,
+    patch: Partial<Pick<BranchEntity, 'fittingType' | 'dimension' | 'branchDimension' | 'angleDeg'>>,
   ) => void;
   setPendingBranchChoice: (choice: PendingBranchChoice | null) => void;
   resolvePendingBranchChoice: (fittingType: BranchFittingType) => void;
@@ -1662,6 +1674,11 @@ export const useStore = create<AppState>((set, get) => {
     set((s) => ({ branches: [...s.branches, branch] }));
   },
 
+  updateBranch: (id, patch) => {
+    recordHistory();
+    set((s) => ({ branches: s.branches.map((b) => (b.id === id ? { ...b, ...patch } : b)) }));
+  },
+
   addTag: (lineId, x, y) => {
     recordHistory();
     const tag: TagEntity = {
@@ -1739,16 +1756,22 @@ export const useStore = create<AppState>((set, get) => {
   resolvePendingBranchChoice: (fittingType) => {
     const choice = get().pendingBranchChoice;
     if (!choice) return;
-    get().addBranch(
-      choice.mainSubId,
-      choice.mainMaterial,
-      choice.mainDimension,
-      choice.branchDimension,
-      fittingType,
-      choice.x,
-      choice.y,
-      choice.angleDeg,
-    );
+    if (choice.editId) {
+      // Dobbeltklikk på en EKSISTERENDE avgreining – bytt type i stedet for å
+      // opprette en ny.
+      get().updateBranch(choice.editId, { fittingType });
+    } else {
+      get().addBranch(
+        choice.mainSubId,
+        choice.mainMaterial,
+        choice.mainDimension,
+        choice.branchDimension,
+        fittingType,
+        choice.x,
+        choice.y,
+        choice.angleDeg,
+      );
+    }
     set({ pendingBranchChoice: null });
   },
 

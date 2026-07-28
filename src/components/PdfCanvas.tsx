@@ -60,6 +60,33 @@ import { SymbolTooltip } from './SymbolTooltip';
 import { BranchChoicePopover } from './BranchChoicePopover';
 import { registerStage } from '../lib/stageCapture';
 
+/** Nærmeste linje av gitt kind innenfor toleranse, blant en FERDIG FILTRERT
+ * kandidatliste. Selve løkka bak `findBranchTarget` (under, i komponenten), trukket
+ * ut som en ren modulfunksjon slik at auto-tilkobling etter Flytt/Kopier
+ * (`connectLandedEndpoints`) kan sende inn en kandidatliste som EKSKLUDERER linjene
+ * som nettopp ble flyttet/kopiert (ellers avgreiner en strekning på sin egen nabo),
+ * og lese fra fersk store-tilstand i stedet for en potensielt utdatert React-closure. */
+function findBranchTargetIn(
+  candidates: LineEntity[],
+  point: { x: number; y: number },
+  kind: 'pipe' | 'duct',
+  mpp: number | null,
+  invScale: number,
+): { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null {
+  let best: { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null = null;
+  for (const line of candidates) {
+    if (categoryOf(line.subId)?.kind !== kind) continue;
+    const cp = closestPointOnPolyline(line.points, point);
+    if (!cp) continue;
+    const dimMm = dimensionDiameterMm(line.dimension);
+    const tol = Math.max(mmToPx(dimMm, mpp), 16 * invScale);
+    if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
+      best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
+    }
+  }
+  return best;
+}
+
 export function PdfCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -244,41 +271,6 @@ export function PdfCanvas() {
     transformPlanRef.current = null;
     setDistanceEntry(null);
   }, []);
-
-  /** Fullfører en flytte-/kopier-gest med en gitt forskyvning (px, i bildekoordinater).
-   * Kalles både fra andre klikk (musepekerens avstand fra basispunktet) og fra
-   * mm-feltet (avstand langs gjeldende retning). */
-  const commitTransform = useCallback(
-    (dx: number, dy: number) => {
-      if (dx === 0 && dy === 0) {
-        // Null forskyvning: avbryt i stedet for å committe en usynlig (dupliserende)
-        // flytting/kopi – dette skjer typisk ved et rent dobbeltklikk på basispunktet.
-        resetTransform();
-        return;
-      }
-      if (tool === 'copy') duplicateSelection(dx, dy);
-      else moveSelection(dx, dy, true);
-      resetTransform();
-    },
-    [tool, duplicateSelection, moveSelection, resetTransform],
-  );
-
-  /** Flytter/kopierer nøyaktig den oppgitte avstanden (mm), langs retningen pekeren
-   * peker akkurat nå (inkl. ev. Shift-låst 45°-retning) – ikke langs pekerens egen
-   * avstand fra basispunktet. */
-  const commitNumericDistance = useCallback(() => {
-    if (!distanceEntry || !transformBase || !cursor || !scale.metersPerPixel) return;
-    const mm = parseFloat(distanceEntry.value.replace(',', '.'));
-    const ddx = cursor.x - transformBase.x;
-    const ddy = cursor.y - transformBase.y;
-    const len = Math.hypot(ddx, ddy);
-    if (!Number.isFinite(mm) || mm <= 0 || len < 1e-6) {
-      setDistanceEntry(null);
-      return;
-    }
-    const px = mmToPx(mm, scale.metersPerPixel);
-    commitTransform((ddx / len) * px, (ddy / len) * px);
-  }, [distanceEntry, transformBase, cursor, scale.metersPerPixel, commitTransform]);
 
   // Registrerer Stage-instansen i stageCapture-modulen, slik at TopBar/PrintableReport
   // kan fange hele tegningen som bilde til PDF-eksport uten å måtte sende Stage-refen
@@ -583,6 +575,12 @@ export function PdfCanvas() {
       setShowShiftTip(false);
       setDraftPoints([]);
       setContinuationAnchor(null);
+      // Rydd flagget her også – uten dette kunne det bli stående `true` for alltid
+      // hvis seedContinuation() ble kalt mens verktøyet allerede var samme
+      // `line:<subId>` (da endres ikke `tool`, og denne effekten kjører aldri), og
+      // en gammel, forlatt draft ville da smettet med videre neste gang man gikk
+      // inn i EN HELT ANNEN tegneverktøy.
+      preserveDraftRef.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, currentPage]);
@@ -591,30 +589,27 @@ export function PdfCanvas() {
    * brukes til å snappe en ny linjes start/slutt inn på et eksisterende rør/kanal slik
    * at det automatisk settes inn en avgreiningsdel (T-rør/45°-grenrør/påstikk/T-kanal). */
   const findBranchTarget = useCallback(
-    (point: { x: number; y: number }, kind: 'pipe' | 'duct') => {
-      let best: { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null = null;
-      for (const line of lines) {
-        if (line.page !== currentPage) continue;
-        if (categoryOf(line.subId)?.kind !== kind) continue;
-        const cp = closestPointOnPolyline(line.points, point);
-        if (!cp) continue;
-        const dimMm = dimensionDiameterMm(line.dimension);
-        const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
-        if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
-          best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
-        }
-      }
-      return best;
-    },
+    (point: { x: number; y: number }, kind: 'pipe' | 'duct') =>
+      findBranchTargetIn(
+        lines.filter((l) => l.page === currentPage),
+        point,
+        kind,
+        scale.metersPerPixel,
+        invScale,
+      ),
     [lines, currentPage, scale.metersPerPixel, invScale],
   );
 
   /** Setter inn en avgreiningsdel (eller ber bruker velge type for kanal) for et allerede
-   * funnet treff, og returnerer det snappede punktet. */
+   * funnet treff, og returnerer det snappede punktet. `mode: 'auto'` (brukt av
+   * connectLandedEndpoints etter Flytt/Kopier) hopper over popoveren for kanaler og
+   * setter alltid inn et påstikk direkte – brukeren kan siden dobbeltklikke
+   * påstikket for å bytte til T-kanal (se BranchMarker/updateBranch). */
   const insertBranchForTarget = useCallback(
     (
       target: { line: LineEntity; x: number; y: number; angleDeg: number },
       branchDimension: string,
+      mode: 'ask' | 'auto' = 'ask',
     ): { x: number; y: number } => {
       const kind = categoryOf(target.line.subId)?.kind;
       if (kind === 'pipe') {
@@ -628,9 +623,10 @@ export function PdfCanvas() {
           target.y,
           target.angleDeg,
         );
-      } else if (isRectDim(target.line.dimension) !== isRectDim(branchDimension)) {
-        // Rektangulær hovedkanal ↔ rund avgreining (eller omvendt): «T-kanal» finnes
-        // ikke fysisk her, så vi spør ikke – det settes alltid inn et påstikk.
+      } else if (mode === 'auto' || isRectDim(target.line.dimension) !== isRectDim(branchDimension)) {
+        // 'auto': ventilasjon skal alltid få påstikk direkte, uten spørsmål (brukeren
+        // kan bytte til T-kanal etterpå ved dobbeltklikk). Rund↔rektangulær mismatch
+        // gir samme resultat uansett modus – «T-kanal» finnes ikke fysisk der.
         addBranch(
           target.line.subId,
           target.line.material,
@@ -656,6 +652,124 @@ export function PdfCanvas() {
     },
     [addBranch, setPendingBranchChoice],
   );
+
+  /** Etter en fullført Flytt/Kopier: sett inn påstikk der et ENDEPUNKT på en flyttet/
+   * kopiert linje har landet MIDT PÅ kroppen til en annen kanal/rør – akkurat som når
+   * man begynner å tegne en ny linje der (se mousedown-grenen for isLineTool), men nå
+   * utløst av å slippe en flyttet/kopiert linje i stedet for et tegne-klikk.
+   * Ventilasjon får alltid påstikk direkte (kan endres til T-kanal ved dobbeltklikk på
+   * markøren, se BranchMarker/updateBranch); rør får sin normale standardtype.
+   * Endepunkt-mot-endepunkt er en vanlig skjøt/bend og skal IKKE gi en avgreining.
+   *
+   * Leser alt fra FERSK store-tilstand (useStore.getState()), IKKE fra komponentens
+   * egne `lines`/`branches` – rett etter duplicateSelection inneholder closurens
+   * `lines` ikke kopiene ennå, og rett etter moveSelection har den fortsatt de GAMLE
+   * koordinatene (React har ikke rukket å re-rendre komponenten). */
+  const connectLandedEndpoints = useCallback(
+    (movedLineIds: Set<string>) => {
+      if (movedLineIds.size === 0) return;
+      const mpp = scale.metersPerPixel;
+      const st0 = useStore.getState();
+      const page = st0.currentPage;
+      const moved = st0.lines.filter((l) => movedLineIds.has(l.id) && l.page === page);
+      // Ekskluder HELE det flyttede/kopierte settet fra kandidatene – ellers ville en
+      // strekning kunne avgrene på sin egen nabo, eller på et vertex-punkt en annen
+      // flyttet linje nettopp forlot.
+      const candidates = st0.lines.filter((l) => l.page === page && !movedLineIds.has(l.id));
+      if (candidates.length === 0) return;
+
+      for (const line of moved) {
+        const kind = categoryOf(line.subId)?.kind;
+        if (kind !== 'pipe' && kind !== 'duct') continue;
+        const n = line.points.length;
+        const ends = [
+          { x: line.points[0], y: line.points[1] },
+          { x: line.points[n - 2], y: line.points[n - 1] },
+        ];
+        for (const end of ends) {
+          const target = findBranchTargetIn(candidates, end, kind, mpp, invScale);
+          if (!target) continue;
+          const tol = Math.max(mmToPx(dimensionDiameterMm(target.line.dimension), mpp), 16 * invScale);
+          // Treff nøyaktig på målets endepunkt = en vanlig skjøt/fortsettelse (delte
+          // punkter, samme som når to strekk møtes i et bend) – IKKE en avgreining.
+          if (endpointHitOf(target.line, target.x, target.y, tol)) continue;
+          // Unngå duplikat: finnes det allerede en avgreining tilnærmet i treffpunktet
+          // (typisk fordi et kopiert påstikk fulgte med i selve kopien), ikke lag en til.
+          // Leses på nytt per endepunkt, siden forrige runde i denne løkka kan ha lagt
+          // til nettopp en slik avgreining.
+          const eps = Math.max(6 * invScale, 0.5 * mmToPx(dimensionDiameterMm(line.dimension), mpp));
+          const branchesNow = useStore.getState().branches;
+          if (branchesNow.some((b) => b.page === page && distance(b.x, b.y, target.x, target.y) <= eps)) continue;
+          insertBranchForTarget(target, line.dimension, 'auto');
+        }
+      }
+    },
+    [scale.metersPerPixel, invScale, insertBranchForTarget],
+  );
+
+  /** Fullfører en flytte-/kopier-gest med en gitt forskyvning (px, i bildekoordinater).
+   * Kalles både fra andre klikk (musepekerens avstand fra basispunktet) og fra
+   * mm-feltet (avstand langs gjeldende retning).
+   *
+   * Hele committen (selve flyttingen/kopien OG ev. auto-innsatte påstikk via
+   * connectLandedEndpoints) pakkes i ÉTT angre-steg med beginHistoryBatch/
+   * endHistoryBatch – ellers ville hver enkelt addBranch (som kaller recordHistory()
+   * selv) blitt sitt eget Ctrl+Z-steg oppå selve flyttingen. */
+  const commitTransform = useCallback(
+    (dx: number, dy: number) => {
+      if (dx === 0 && dy === 0) {
+        // Null forskyvning: avbryt i stedet for å committe en usynlig (dupliserende)
+        // flytting/kopi – dette skjer typisk ved et rent dobbeltklikk på basispunktet.
+        resetTransform();
+        return;
+      }
+      // Må leses FØR resetTransform() nuller transformPlanRef.
+      const plan = transformPlanRef.current;
+      const beforeLineIds = new Set(useStore.getState().lines.map((l) => l.id));
+      beginHistoryBatch();
+      try {
+        if (tool === 'copy') {
+          duplicateSelection(dx, dy);
+          const newIds = new Set(
+            useStore.getState().lines.filter((l) => !beforeLineIds.has(l.id)).map((l) => l.id),
+          );
+          connectLandedEndpoints(newIds);
+        } else {
+          moveSelection(dx, dy, true);
+          connectLandedEndpoints(plan ? plan.lineIds : new Set<string>());
+        }
+      } finally {
+        endHistoryBatch();
+      }
+      resetTransform();
+    },
+    [
+      tool,
+      duplicateSelection,
+      moveSelection,
+      resetTransform,
+      connectLandedEndpoints,
+      beginHistoryBatch,
+      endHistoryBatch,
+    ],
+  );
+
+  /** Flytter/kopierer nøyaktig den oppgitte avstanden (mm), langs retningen pekeren
+   * peker akkurat nå (inkl. ev. Shift-låst 45°-retning) – ikke langs pekerens egen
+   * avstand fra basispunktet. */
+  const commitNumericDistance = useCallback(() => {
+    if (!distanceEntry || !transformBase || !cursor || !scale.metersPerPixel) return;
+    const mm = parseFloat(distanceEntry.value.replace(',', '.'));
+    const ddx = cursor.x - transformBase.x;
+    const ddy = cursor.y - transformBase.y;
+    const len = Math.hypot(ddx, ddy);
+    if (!Number.isFinite(mm) || mm <= 0 || len < 1e-6) {
+      setDistanceEntry(null);
+      return;
+    }
+    const px = mmToPx(mm, scale.metersPerPixel);
+    commitTransform((ddx / len) * px, (ddy / len) * px);
+  }, [distanceEntry, transformBase, cursor, scale.metersPerPixel, commitTransform]);
 
   /** Setter inn en avgreiningsdel (eller ber bruker velge type for kanal) ved et punkt
    * der en ny linje starter/ender på et eksisterende rør/kanal. */
@@ -812,6 +926,11 @@ export function PdfCanvas() {
       const other = fromStart ? [line.points[n - 2], line.points[n - 1]] : [line.points[0], line.points[1]];
       setDraftPoints(shared);
       setContinuationAnchor({ x: other[0], y: other[1] });
+      // Dette bytter verktøyet fra Velg til `line:<subId>` i det stille (via
+      // setLineSelection over) – vis Shift-hintet med en gang som et tydelig tegn
+      // på at man nå ER i tegnemodus, ellers virker neste klikk som en uforklarlig
+      // ny kanal.
+      setShowShiftTip(true);
       if (targetDimension && targetDimension !== line.dimension) {
         // Fortsett med et annet mål: legg inn overgang i skjøten og bruk det nye målet.
         addTransition(line.subId, line.material, line.dimension, targetDimension, shared[0], shared[1]);
@@ -1207,12 +1326,16 @@ export function PdfCanvas() {
       } else if (isTransformTool) {
         // Samme snap-regler som ved klikk: Shift låser retningen (kun når basispunktet
         // er satt – ellers er det ingen retning å låse til ennå), ellers nærmeste
-        // vektorpunkt.
-        setCursor(
-          transformBase && e.evt.shiftKey
-            ? snapFirstPoint(transformBase, p)
-            : (findMeasureSnapPoint(p) ?? p),
-        );
+        // vektorpunkt. Behold også snap-`kind` (samme state som måleverktøyene bruker)
+        // slik at snap-badgen («Endepunkt»/«På linje») vises her også.
+        if (transformBase && e.evt.shiftKey) {
+          setCursor(snapFirstPoint(transformBase, p));
+          setMeasureSnapKind(null);
+        } else {
+          const snap = findMeasureSnapPoint(p);
+          setCursor(snap ?? p);
+          setMeasureSnapKind(snap?.kind ?? null);
+        }
       }
 
       // Forhåndsvis hva et klikk nå ville gjort: fortsette et eksisterende rør/kanal,
@@ -1518,21 +1641,25 @@ export function PdfCanvas() {
     [getImagePoint, lines, currentPage, scale.metersPerPixel, invScale, addClamp],
   );
 
+  // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
+  // samme palett som spøkelses-forhåndsvisningen ved Flytt/Kopier bruker.
+  const crosshairColor = tool === 'copy' ? '#2f9e44' : isTransformTool ? '#4c9aff' : '#7c4dff';
+
   const cursorStyle =
     isPan || isSpacePan
       ? 'grab'
-      : tool === 'move'
-        ? 'move'
-        : tool === 'copy'
-          ? 'copy'
-          : isLineTool ||
-              isSymbolTool ||
-              isAnnotationTool ||
-              isMeasureTool ||
-              tool === 'calibrate' ||
-              tool === 'split'
-            ? 'crosshair'
-            : 'default';
+      : isTransformTool
+        // Flytt/Kopier har nå sitt eget Konva-tegnede sikte – ikke vis OGSÅ den
+        // native move/copy-musepekeren i tillegg, det ga to markører oppå hverandre.
+        ? 'none'
+        : isLineTool ||
+            isSymbolTool ||
+            isAnnotationTool ||
+            isMeasureTool ||
+            tool === 'calibrate' ||
+            tool === 'split'
+          ? 'crosshair'
+          : 'default';
 
   // Forhåndsvisning av pågående linje (med levende segment til peker)
   const draftPreview =
@@ -1954,7 +2081,6 @@ export function PdfCanvas() {
                 onChange={(pts) => updateLinePoints(line.id, pts)}
                 onMove={(dx, dy) => moveSingleLine(line.id, dx, dy, true)}
                 onExtend={(fromStart) => seedContinuation(line, fromStart)}
-                onSplit={(x, y) => splitLineAt(line.id, x, y)}
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
                 customColors={customColors}
@@ -2005,6 +2131,19 @@ export function PdfCanvas() {
               hideLabel={hideComponentLabels}
               interactive={tool === 'select'}
               onSelect={() => select(b.id, 'branch')}
+              onEditType={() =>
+                setPendingBranchChoice({
+                  mainSubId: b.subId,
+                  mainMaterial: b.material,
+                  mainDimension: b.dimension,
+                  branchDimension: b.branchDimension,
+                  x: b.x,
+                  y: b.y,
+                  angleDeg: b.angleDeg,
+                  editId: b.id,
+                  currentFittingType: b.fittingType,
+                })
+              }
             />
           ))}
           {pageBends.map((b) => (
@@ -2098,44 +2237,47 @@ export function PdfCanvas() {
               fill="rgba(124,77,255,0.08)"
             />
           )}
-          {isMeasureTool && cursor && (
-            // Permanent sikte (trådkors) på pekeren i måleverktøyene, slik at man kan
-            // treffe nøyaktig der man vil måle fra/til – uavhengig av om man er snappet
-            // til noe. Tegnes som to hårlinjer med en liten åpning midt i, pluss et lite
-            // senterpunkt. Snap-indikatoren under tegnes oppå når man faktisk er snappet.
+          {(isMeasureTool || isTransformTool) && cursor && (
+            // Permanent sikte (trådkors) på pekeren i måleverktøyene OG i Flytt/Kopier
+            // (brukeren ba spesifikt om samme sikte der), slik at man kan treffe
+            // nøyaktig der man vil måle/flytte/kopiere fra – uavhengig av om man er
+            // snappet til noe. Tegnes som to hårlinjer med en liten åpning midt i, pluss
+            // et lite senterpunkt. Snap-indikatoren under tegnes oppå når man faktisk er
+            // snappet. Fargen følger verktøyet – samme palett som spøkelses-
+            // forhåndsvisningen ved Flytt/Kopier.
             <Group x={cursor.x} y={cursor.y} listening={false}>
               <Line
                 points={[-14 * invScale, 0, -4 * invScale, 0]}
-                stroke="#7c4dff"
+                stroke={crosshairColor}
                 strokeWidth={1 * invScale}
               />
               <Line
                 points={[4 * invScale, 0, 14 * invScale, 0]}
-                stroke="#7c4dff"
+                stroke={crosshairColor}
                 strokeWidth={1 * invScale}
               />
               <Line
                 points={[0, -14 * invScale, 0, -4 * invScale]}
-                stroke="#7c4dff"
+                stroke={crosshairColor}
                 strokeWidth={1 * invScale}
               />
               <Line
                 points={[0, 4 * invScale, 0, 14 * invScale]}
-                stroke="#7c4dff"
+                stroke={crosshairColor}
                 strokeWidth={1 * invScale}
               />
-              <Circle radius={1.5 * invScale} fill="#7c4dff" />
+              <Circle radius={1.5 * invScale} fill={crosshairColor} />
             </Group>
           )}
-          {isMeasureTool && measureSnapKind && cursor && (
+          {(isMeasureTool || isTransformTool) && measureSnapKind && cursor && (
             <Group x={cursor.x} y={cursor.y}>
               <Circle
                 radius={7 * invScale}
-                stroke={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'}
+                stroke={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor}
                 strokeWidth={1.5 * invScale}
                 fill="#fff"
               />
-              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'} />
+              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor} />
               <Text
                 text={
                   measureSnapKind === 'endpoint'
@@ -2149,7 +2291,7 @@ export function PdfCanvas() {
                 x={10 * invScale}
                 y={-16 * invScale}
                 fontSize={11 * invScale}
-                fill={measureSnapKind === 'close' ? '#2f9e44' : '#7c4dff'}
+                fill={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor}
                 fontStyle="bold"
               />
             </Group>
@@ -2458,9 +2600,6 @@ interface LineNodeProps {
    * denne linjens egne punkter (brukt av knekkpunkt-håndtakene). */
   onMove: (dx: number, dy: number) => void;
   onExtend: (fromStart: boolean) => void;
-  /** Splitter et rett segment i to ved et gitt punkt (klikk på midtpunkt-håndtaket) –
-   * brukes til å manuelt legge til et knekkpunkt på et allerede tegnet strekk. */
-  onSplit: (x: number, y: number) => void;
   pipeRenderStyle: PipeRenderStyle;
   customColors: Record<string, string>;
   onVertexDragStart: () => void;
@@ -2479,7 +2618,6 @@ function LineNode({
   onChange,
   onMove,
   onExtend,
-  onSplit,
   pipeRenderStyle,
   customColors,
   onVertexDragStart,
@@ -2567,33 +2705,12 @@ function LineNode({
         <BendBadge key={i} x={b.x} y={b.y} angleDeg={classifyBendAngle(b.angleDeg)} invScale={invScale} />
       ))}
 
-      {/* Knekkpunkt- og midtpunkt-håndtak for redigering av tegnede rør/kanaler */}
-      {selected &&
-        editable &&
-        Array.from({ length: line.points.length / 2 - 1 }, (_, segIndex) => {
-          const x0 = line.points[segIndex * 2];
-          const y0 = line.points[segIndex * 2 + 1];
-          const x1 = line.points[segIndex * 2 + 2];
-          const y1 = line.points[segIndex * 2 + 3];
-          return (
-            <Circle
-              key={`mid-${segIndex}`}
-              x={(x0 + x1) / 2}
-              y={(y0 + y1) / 2}
-              radius={4 * invScale}
-              fill="rgba(245,166,35,0.5)"
-              stroke="#f5a623"
-              strokeWidth={1 * invScale}
-              onMouseDown={(e) => {
-                e.cancelBubble = true;
-              }}
-              onClick={(e) => {
-                e.cancelBubble = true;
-                onSplit((x0 + x1) / 2, (y0 + y1) / 2);
-              }}
-            />
-          );
-        })}
+      {/* Knekkpunkt-håndtak for redigering av tegnede rør/kanaler. Det gamle
+          midtpunkt-håndtaket (klikk midt på segmentet for å dele det) er fjernet –
+          det blokkerte kropp-draget (cancelBubble) og et enkelt klikk/slipp der man
+          egentlig prøvde å GRIPE kanalen ble tolket som et «click» → delte kanalen i
+          to («en ekstra kanal» i mengdelista). «Del»-verktøyet (tool === 'split')
+          dekker splitting bevisst og forutsigbart nå. */}
       {selected &&
         editable &&
         Array.from({ length: line.points.length / 2 }, (_, i) => {
@@ -2612,7 +2729,21 @@ function LineNode({
                 e.cancelBubble = true;
               }}
               onDragStart={onVertexDragStart}
-              onDragMove={(e) => setVertex(idx, e.target.x(), e.target.y())}
+              onDragMove={(e) => {
+                // Shift holdt inne: lås retningen mot dette punktet til nærmeste
+                // 45°-multiplum, målt fra linjens ANDRE endepunkt – samme regel og
+                // samme hjelpefunksjon (snapFirstPoint) som når man tegner en ny linje.
+                // Uten Shift er strekket fritt, som før.
+                if (e.evt.shiftKey) {
+                  const otherIdx = idx === 0 ? 2 : 0;
+                  const other = { x: line.points[otherIdx], y: line.points[otherIdx + 1] };
+                  const snapped = snapFirstPoint(other, { x: e.target.x(), y: e.target.y() });
+                  e.target.position(snapped); // ellers tegnes håndtaket på rå pekerposisjon
+                  setVertex(idx, snapped.x, snapped.y);
+                } else {
+                  setVertex(idx, e.target.x(), e.target.y());
+                }
+              }}
               onDragEnd={onVertexDragEnd}
               onDblClick={(e) => {
                 e.cancelBubble = true;
@@ -2696,7 +2827,10 @@ function TransitionMarker({
         />
       )}
       <Circle
-        radius={Math.max(r + 6 * invScale, 14 * invScale)}
+        // Krympet fra max(r+6,14) til r+2: den store treffsirkelen lå OVER kanalen
+        // og «spiste» klikk/dra som egentlig var ment for kanalkroppen under (se
+        // kommentaren ved LineNode sitt fjernede midtpunkt-håndtak).
+        radius={r + 2 * invScale}
         opacity={0}
         listening={interactive}
         onMouseDown={(e) => {
@@ -2716,6 +2850,7 @@ function BranchMarker({
   hideLabel,
   interactive,
   onSelect,
+  onEditType,
 }: {
   branch: BranchEntity;
   invScale: number;
@@ -2723,6 +2858,7 @@ function BranchMarker({
   hideLabel: boolean;
   interactive: boolean;
   onSelect: () => void;
+  onEditType: () => void;
 }) {
   const color = SUBCATEGORIES[branch.subId]?.color ?? '#9b59b6';
   const r = 10 * invScale;
@@ -2745,12 +2881,17 @@ function BranchMarker({
         />
       )}
       <Circle
-        radius={Math.max(r + 6 * invScale, 14 * invScale)}
+        // Krympet fra max(r+6,14) til r+2 – se TransitionMarker over.
+        radius={r + 2 * invScale}
         opacity={0}
         listening={interactive}
         onMouseDown={(e) => {
           e.cancelBubble = true;
           onSelect();
+        }}
+        onDblClick={(e) => {
+          e.cancelBubble = true;
+          onEditType();
         }}
       />
     </Group>
@@ -2795,7 +2936,9 @@ function BendMarker({
         </>
       )}
       <Circle
-        radius={12 * invScale}
+        // Krympet fra 12 til 6 – se TransitionMarker over (samme årsak: en for stor
+        // treffsirkel lå oppå kanalen og hindret at man kunne gripe kroppen der).
+        radius={6 * invScale}
         opacity={0}
         listening={interactive}
         onMouseDown={(e) => {

@@ -9,6 +9,7 @@ import {
   Wind,
 } from 'lucide-react';
 import { SiteNav } from '../components/site/SiteNav';
+import { HeroDemo } from '../components/site/HeroDemo';
 
 const FEATURES = [
   {
@@ -94,7 +95,18 @@ export default function Landing() {
               <Link to="/register" className="site-btn primary">
                 Prøv gratis
               </Link>
-              <a href="#funksjoner" className="site-btn ghost">
+              <a
+                href="#demo"
+                className="site-btn ghost"
+                onClick={(e) => {
+                  // Rå #-ankere kolliderer med HashRouter (window.location.hash ER
+                  // ruten) – en `<a href="#demo">` ville trigget en ekte
+                  // rutenavigasjon til "/demo" og blitt sendt til catch-all-ruten.
+                  // Scroll manuelt til demo-boksen i stedet.
+                  e.preventDefault();
+                  document.getElementById('demo')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }}
+              >
                 Se hvordan det fungerer
               </a>
             </div>
@@ -107,21 +119,7 @@ export default function Landing() {
               <span className="site-mock-dot" />
               <span className="site-mock-dot" />
             </div>
-            <div className="site-mock-canvas" />
-            <div className="site-mock-table">
-              <div className="site-mock-row">
-                <span>Varmtvannsrør · Kobber · DN18</span>
-                <strong>24,8 m</strong>
-              </div>
-              <div className="site-mock-row">
-                <span>Avtrekkskanal · Ø200</span>
-                <strong>12,1 m</strong>
-              </div>
-              <div className="site-mock-row">
-                <span>Bend 90° · DN18</span>
-                <strong>4 stk</strong>
-              </div>
-            </div>
+            <HeroDemo />
           </div>
         </div>
       </section>
