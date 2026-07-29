@@ -12,8 +12,9 @@
 // eksistere hvis `pdf.ts` allerede har kjørt og satt opp workeren. Vite løser
 // begge importene til samme modulinstans.
 
-import { OPS, Util } from 'pdfjs-dist';
+import { Util } from 'pdfjs-dist';
 import { RENDER_SCALE } from './scale';
+import { walkPageOperators } from './pdfOperatorWalk';
 import type { PdfDoc } from './pdf';
 
 // ── Tak ─────────────────────────────────────────────────────────────────
@@ -27,9 +28,6 @@ export const MAX_OPS = 400_000;
 export const MAX_SAMPLE_SEGMENTS = 200;
 export const MAX_TEXT_ITEMS = 500;
 export const MAX_IMAGE_ITEMS = 50;
-
-/** Hvor ofte `shouldCancel` sjekkes under gjennomgangen. */
-const CANCEL_CHECK_INTERVAL = 20_000;
 
 // ── Klassifiseringsterskler ─────────────────────────────────────────────
 //
@@ -59,7 +57,7 @@ export interface SampledSegment {
   y2: number;
   /** Strekbredde i bilde-piksler (CTM-skalert). */
   lineWidth: number;
-  kind: 'line' | 'rect' | 'close';
+  kind: 'line' | 'rect' | 'close' | 'curve';
 }
 
 export interface PdfPathStats {
@@ -260,29 +258,7 @@ export async function extractText(
   return { sourceId: 'embedded', items: [] };
 }
 
-// ── Matrisehjelpere ─────────────────────────────────────────────────────
-
-type Matrix = number[];
-
-function applyPoint(m: Matrix, x: number, y: number): [number, number] {
-  const p = Util.applyTransform([x, y], m);
-  return [p[0], p[1]];
-}
-
-/** Uniform skalafaktor for CTM-en – brukes til å gjøre strekbredde til piksler. */
-function scaleOf(m: Matrix): number {
-  return Math.hypot(m[0], m[1]) || 1;
-}
-
-// ── Intern tilstand under gjennomgangen ─────────────────────────────────
-
-interface PendingPath {
-  isClip: boolean;
-  segments: SampledSegment[];
-  subpaths: number;
-  rectangles: number;
-  curves: number;
-}
+// ── Hovedanalyse av én side ─────────────────────────────────────────────
 
 function emptyPathStats(): PdfPathStats {
   return {
@@ -303,16 +279,15 @@ function emptyPathStats(): PdfPathStats {
   };
 }
 
-// ── Hovedanalyse av én side ─────────────────────────────────────────────
-
 /**
- * Går gjennom sidens operatorliste og teller/samler hva den faktisk inneholder.
+ * Teller opp hva siden faktisk inneholder.
  *
- * Koordinatkontrakt: CTM-en seedes med `viewport.transform` ved RENDER_SCALE,
- * altså nøyaktig samme viewport som `renderPage` bruker. Uttrukket geometri
- * lander dermed rett i det pikselrommet appen allerede lagrer alle tegnede
- * entiteter i – ingen ny koordinatakse, og `metersPerPixelFromScale` gjelder
- * uendret.
+ * Selve tolkningen av operatorlisten ligger i `walkPageOperators` og deles med
+ * geometriuttrekket (fase 2), slik at det bare finnes ÉN implementasjon av
+ * transformasjonsstacken og constructPath-dekodingen.
+ *
+ * Kurver flates bevisst IKKE ut her – de telles bare. Utflating koster tid og
+ * minne som diagnostikken ikke trenger.
  */
 export async function analyzePage(
   doc: PdfDoc,
@@ -320,405 +295,145 @@ export async function analyzePage(
   opts: AnalyzeOptions = {},
 ): Promise<PdfPageAnalysis> {
   const started = performance.now();
-  const page = await doc.getPage(pageNumber);
-  const viewport = page.getViewport({ scale: RENDER_SCALE });
-  const widthPx = Math.floor(viewport.width);
-  const heightPx = Math.floor(viewport.height);
-  const pageArea = widthPx * heightPx;
   const warnings: string[] = [];
 
-  const opList = await page.getOperatorList();
-  const { fnArray, argsArray } = opList;
-
   const paths = emptyPathStats();
-  const images: PdfImageStats = {
-    count: 0,
-    maskCount: 0,
-    inlineCount: 0,
-    largestCoverage: 0,
-    totalCoverage: 0,
-    items: [],
-  };
+  const imageItems: PdfImageItem[] = [];
+  let imageCount = 0;
+  let maskCount = 0;
+  let inlineCount = 0;
   const sample: SampledSegment[] = [];
   let bbox: LineworkBBox | null = null;
 
-  let ctm: Matrix = viewport.transform.slice();
-  const stack: Matrix[] = [];
-  let lineWidth = 1;
-  let formDepth = 0;
-  let maxFormDepth = 0;
-  let markedContentSections = 0;
-  let truncated = false;
-  let pending: PendingPath | null = null;
-  let sawGroupedImageOps = false;
-
-  const limit = Math.min(fnArray.length, MAX_OPS);
-  if (fnArray.length > MAX_OPS) truncated = true;
-
-  /** Legger et ferdig transformert segment inn i tellere, bbox og prøve. */
-  function emit(
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    kind: SampledSegment['kind'],
-    target: PendingPath,
-  ) {
-    const [dx1, dy1] = applyPoint(ctm, x1, y1);
-    const [dx2, dy2] = applyPoint(ctm, x2, y2);
-    target.segments.push({
-      x1: dx1,
-      y1: dy1,
-      x2: dx2,
-      y2: dy2,
-      lineWidth: lineWidth * scaleOf(ctm),
-      kind,
-    });
-  }
-
-  /** Avslutter gjeldende bane: teller den, eller forkaster den om den klipper. */
-  function commit(pathKind: 'stroke' | 'fill' | 'both' | 'clip' | 'none') {
-    if (!pending) return;
-    const p = pending;
-    pending = null;
-
-    if (pathKind === 'clip' || p.isClip) {
-      // Klippebaner ekskluderes bevisst fra linjeverket. Alle arkitekt-PDF-er
-      // klipper viewporten med et sidestort rektangel; teller man det som
-      // geometri, ser selv en blank side ut til å ha linjeverk, og
-      // linjeverk-bboxen blir alltid hele siden.
-      paths.clipPaths++;
-      return;
-    }
-
-    if (pathKind === 'stroke') paths.strokedPaths++;
-    else if (pathKind === 'fill') paths.filledPaths++;
-    else if (pathKind === 'both') {
-      paths.strokedPaths++;
-      paths.filledPaths++;
-    } else paths.unpaintedPaths++;
-
-    paths.subpaths += p.subpaths;
-    paths.rectangles += p.rectangles;
-    paths.curves += p.curves;
-
-    for (const s of p.segments) {
-      paths.segments++;
-      if (s.kind === 'line') paths.lineSegments++;
-      else if (s.kind === 'rect') paths.rectEdgeSegments++;
-      else paths.closeSegments++;
-
-      const dx = s.x2 - s.x1;
-      const dy = s.y2 - s.y1;
-      if (Math.abs(dx) < 0.01 || Math.abs(dy) < 0.01) paths.axisAlignedSegments++;
-      paths.totalStraightLengthPx += Math.hypot(dx, dy);
-
-      const minX = Math.min(s.x1, s.x2);
-      const maxX = Math.max(s.x1, s.x2);
-      const minY = Math.min(s.y1, s.y2);
-      const maxY = Math.max(s.y1, s.y2);
-      if (!bbox) bbox = { minX, minY, maxX, maxY };
-      else {
-        if (minX < bbox.minX) bbox.minX = minX;
-        if (minY < bbox.minY) bbox.minY = minY;
-        if (maxX > bbox.maxX) bbox.maxX = maxX;
-        if (maxY > bbox.maxY) bbox.maxY = maxY;
-      }
-
-      if (sample.length < MAX_SAMPLE_SEGMENTS) sample.push(s);
-    }
-  }
-
-  /** Bilder plasseres ved å avbilde enhetskvadratet gjennom CTM-en. */
-  function recordImage(kind: PdfImageItem['kind']) {
-    images.count++;
-    if (kind === 'mask') images.maskCount++;
-    if (kind === 'inline') images.inlineCount++;
-
-    const corners: [number, number][] = [
-      applyPoint(ctm, 0, 0),
-      applyPoint(ctm, 1, 0),
-      applyPoint(ctm, 1, 1),
-      applyPoint(ctm, 0, 1),
-    ];
-    const xs = corners.map((c) => c[0]);
-    const ys = corners.map((c) => c[1]);
-    const x = Math.min(...xs);
-    const y = Math.min(...ys);
-    const w = Math.max(...xs) - x;
-    const h = Math.max(...ys) - y;
-
-    if (images.items.length < MAX_IMAGE_ITEMS) {
-      images.items.push({ x, y, width: w, height: h, kind });
-    }
-    const coverage = pageArea > 0 ? (w * h) / pageArea : 0;
-    if (coverage > images.largestCoverage) images.largestCoverage = coverage;
-    images.totalCoverage = Math.min(1, images.totalCoverage + coverage);
-  }
-
-  for (let i = 0; i < limit; i++) {
-    if (i % CANCEL_CHECK_INTERVAL === 0 && opts.shouldCancel?.()) {
-      truncated = true;
-      break;
-    }
-
-    const fn = fnArray[i];
-    const args = argsArray[i];
-
-    switch (fn) {
-      case OPS.save:
-        stack.push(ctm.slice());
-        break;
-
-      case OPS.restore:
-        // Må aldri underflowe – en defekt PDF kan ha ubalansert q/Q.
-        ctm = stack.pop() ?? ctm;
-        break;
-
-      case OPS.transform:
-        ctm = Util.transform(ctm, args as Matrix);
-        break;
-
-      case OPS.setLineWidth:
-        lineWidth = args[0] as number;
-        break;
-
-      case OPS.paintFormXObjectBegin:
-        // pdf.js gjør her implisitt save() + transform(matrise). Speiles vi
-        // ikke det, drifter ALT inne i form-XObjectet – og CAD-linjeverk
-        // ligger nesten alltid nettopp der.
-        stack.push(ctm.slice());
-        if (args?.[0]) ctm = Util.transform(ctm, args[0] as Matrix);
-        formDepth++;
-        if (formDepth > maxFormDepth) maxFormDepth = formDepth;
-        break;
-
-      case OPS.paintFormXObjectEnd:
-        ctm = stack.pop() ?? ctm;
-        if (formDepth > 0) formDepth--;
-        break;
-
-      case OPS.constructPath: {
-        commit('none'); // en uavsluttet forrige bane
+  const walk = await walkPageOperators(
+    doc,
+    pageNumber,
+    {
+      onPath(p) {
         paths.constructPathOps++;
-        pending = { isClip: false, segments: [], subpaths: 0, rectangles: 0, curves: 0 };
-        walkSubPath(args as [number[], number[], number[]], pending);
-        break;
-      }
 
-      case OPS.stroke:
-      case OPS.closeStroke:
-        commit('stroke');
-        break;
+        if (p.paint === 'clip') {
+          // Klippebaner ekskluderes bevisst fra linjeverket. Alle arkitekt-PDF-er
+          // klipper viewporten med et sidestort rektangel; teller man det som
+          // geometri, ser selv en blank side ut til å ha linjeverk, og
+          // linjeverk-bboxen blir alltid hele siden.
+          paths.clipPaths++;
+          return;
+        }
 
-      case OPS.fill:
-      case OPS.eoFill:
-        commit('fill');
-        break;
+        if (p.paint === 'stroke') paths.strokedPaths++;
+        else if (p.paint === 'fill') paths.filledPaths++;
+        else if (p.paint === 'both') {
+          paths.strokedPaths++;
+          paths.filledPaths++;
+        } else paths.unpaintedPaths++;
 
-      case OPS.fillStroke:
-      case OPS.eoFillStroke:
-      case OPS.closeFillStroke:
-      case OPS.closeEOFillStroke:
-        commit('both');
-        break;
+        paths.subpaths += p.subpaths;
+        paths.rectangles += p.rectangles;
+        paths.curves += p.curves;
 
-      case OPS.clip:
-      case OPS.eoClip:
-        // pdf.js sender «W n» som clip etterfulgt av endPath – merk banen,
-        // men ikke avslutt den her.
-        if (pending) pending.isClip = true;
-        break;
+        for (const s of p.segments) {
+          paths.segments++;
+          if (s.kind === 'line') paths.lineSegments++;
+          else if (s.kind === 'rect') paths.rectEdgeSegments++;
+          else if (s.kind === 'close') paths.closeSegments++;
 
-      case OPS.endPath:
-        commit(pending?.isClip ? 'clip' : 'none');
-        break;
+          const dx = s.x2 - s.x1;
+          const dy = s.y2 - s.y1;
+          if (Math.abs(dx) < 0.01 || Math.abs(dy) < 0.01) paths.axisAlignedSegments++;
+          paths.totalStraightLengthPx += Math.hypot(dx, dy);
 
-      case OPS.paintImageXObject:
-        recordImage('xobject');
-        break;
+          const minX = Math.min(s.x1, s.x2);
+          const maxX = Math.max(s.x1, s.x2);
+          const minY = Math.min(s.y1, s.y2);
+          const maxY = Math.max(s.y1, s.y2);
+          if (!bbox) bbox = { minX, minY, maxX, maxY };
+          else {
+            if (minX < bbox.minX) bbox.minX = minX;
+            if (minY < bbox.minY) bbox.minY = minY;
+            if (maxX > bbox.maxX) bbox.maxX = maxX;
+            if (maxY > bbox.maxY) bbox.maxY = maxY;
+          }
 
-      case OPS.paintInlineImageXObject:
-        recordImage('inline');
-        break;
+          if (sample.length < MAX_SAMPLE_SEGMENTS) sample.push(s);
+        }
+      },
 
-      case OPS.paintImageMaskXObject:
-        recordImage('mask');
-        break;
+      onImage(img) {
+        imageCount++;
+        if (img.kind === 'mask') maskCount++;
+        if (img.kind === 'inline') inlineCount++;
+        if (imageItems.length < MAX_IMAGE_ITEMS) imageItems.push(img);
+      },
 
-      // Grupperte/repeterte bildevarianter: argumentformen er en samling, så
-      // vi teller dem, men gjetter ikke på bbox.
-      case OPS.paintImageMaskXObjectGroup:
-      case OPS.paintInlineImageXObjectGroup:
-      case OPS.paintImageXObjectRepeat:
-      case OPS.paintImageMaskXObjectRepeat:
-      case OPS.paintSolidColorImageMask:
-        images.count++;
-        sawGroupedImageOps = true;
-        break;
+      onGroupedImage() {
+        imageCount++;
+      },
+    },
+    {
+      flattenCurves: false,
+      maxOps: MAX_OPS,
+      shouldCancel: opts.shouldCancel,
+    },
+  );
 
-      case OPS.beginMarkedContentProps:
-        markedContentSections++;
-        break;
-
-      default:
-        break;
+  // Dekningsgrad regnes ut etter gjennomgangen, siden sidearealet først er
+  // kjent når walkeren har lest viewporten.
+  const pageArea = walk.widthPx * walk.heightPx;
+  let largestCoverage = 0;
+  let totalCoverage = 0;
+  if (pageArea > 0) {
+    for (const it of imageItems) {
+      const coverage = (it.width * it.height) / pageArea;
+      if (coverage > largestCoverage) largestCoverage = coverage;
+      totalCoverage = Math.min(1, totalCoverage + coverage);
     }
   }
 
-  commit(pending?.isClip ? 'clip' : 'none');
+  const images: PdfImageStats = {
+    count: imageCount,
+    maskCount,
+    inlineCount,
+    largestCoverage,
+    totalCoverage,
+    items: imageItems,
+  };
 
-  /**
-   * Dekoder én constructPath. `raw` er `[ops, args, minMax]` der `args` er en
-   * FLAT tallrekke som leses med en løpende markør – operandantallet per
-   * sub-op avgjør hvor mange tall som konsumeres.
-   */
-  function walkSubPath(raw: [number[], number[], number[]], target: PendingPath) {
-    const ops = raw[0] ?? [];
-    const a = raw[1] ?? [];
-    let j = 0;
-    let x = 0;
-    let y = 0;
-    let startX = 0;
-    let startY = 0;
-    let hasCurrent = false;
-
-    for (let k = 0; k < ops.length; k++) {
-      switch (ops[k] | 0) {
-        case OPS.rectangle: {
-          const rx = a[j++];
-          const ry = a[j++];
-          const rw = a[j++];
-          const rh = a[j++];
-          const xw = rx + rw;
-          const yh = ry + rh;
-          target.subpaths++;
-          target.rectangles++;
-          if (rw === 0 || rh === 0) {
-            // pdf.js sin degenererte gren: ett strek fra hjørne til hjørne.
-            emit(rx, ry, xw, yh, 'rect', target);
-          } else {
-            emit(rx, ry, xw, ry, 'rect', target);
-            emit(xw, ry, xw, yh, 'rect', target);
-            emit(xw, yh, rx, yh, 'rect', target);
-            emit(rx, yh, rx, ry, 'rect', target);
-          }
-          // Gjeldende punkt etter et rektangel er rektangelets ORIGO, ikke et
-          // hjørne – slik pdf.js selv gjør det. Feil her korrumperer stille
-          // enhver lineTo som følger etter en `re`.
-          x = rx;
-          y = ry;
-          startX = rx;
-          startY = ry;
-          hasCurrent = true;
-          break;
-        }
-
-        case OPS.moveTo:
-          x = a[j++];
-          y = a[j++];
-          startX = x;
-          startY = y;
-          hasCurrent = true;
-          target.subpaths++;
-          break;
-
-        case OPS.lineTo: {
-          const nx = a[j++];
-          const ny = a[j++];
-          if (!hasCurrent) {
-            // Defensivt: lineTo uten forutgående moveTo.
-            startX = nx;
-            startY = ny;
-            hasCurrent = true;
-            target.subpaths++;
-          } else {
-            emit(x, y, nx, ny, 'line', target);
-          }
-          x = nx;
-          y = ny;
-          break;
-        }
-
-        // Kurver TELLES i fase 1 – ingen utflating. Det eneste som MÅ være
-        // riktig er at gjeldende punkt flyttes til kurvens endepunkt, ellers
-        // får hvert rette segment etter kurven feil koordinater.
-        case OPS.curveTo:
-          target.curves++;
-          x = a[j + 4];
-          y = a[j + 5];
-          j += 6;
-          hasCurrent = true;
-          break;
-
-        case OPS.curveTo2:
-          target.curves++;
-          x = a[j + 2];
-          y = a[j + 3];
-          j += 4;
-          hasCurrent = true;
-          break;
-
-        case OPS.curveTo3:
-          target.curves++;
-          x = a[j + 2];
-          y = a[j + 3];
-          j += 4;
-          hasCurrent = true;
-          break;
-
-        case OPS.closePath:
-          if (hasCurrent && (x !== startX || y !== startY)) {
-            emit(x, y, startX, startY, 'close', target);
-          }
-          x = startX;
-          y = startY;
-          break;
-
-        default:
-          break;
-      }
-    }
-  }
-
-  if (truncated) {
+  if (walk.truncated) {
     warnings.push(
-      `Analysen stoppet etter ${limit.toLocaleString('nb-NO')} operatorer – tallene er ufullstendige.`,
+      `Analysen stoppet etter ${MAX_OPS.toLocaleString('nb-NO')} operatorer – tallene er ufullstendige.`,
     );
   }
-  if (sawGroupedImageOps) {
+  if (walk.sawGroupedImageOps) {
     warnings.push(
       'Siden bruker grupperte/repeterte bilde-operatorer. De er talt, men bidrar ikke til dekningsgrad.',
     );
   }
-  if (markedContentSections > 0) {
+  if (walk.markedContentSections > 0) {
     warnings.push(
-      `Siden har ${markedContentSections} marked content-seksjoner (mulige lag/OCG). Skjulte lag telles med i fase 1.`,
+      `Siden har ${walk.markedContentSections} marked content-seksjoner (mulige lag/OCG). Skjulte lag telles med i fase 1.`,
     );
   }
 
   const text = await extractText(doc, pageNumber, RENDER_SCALE);
   const charCount = text.items.reduce((n, t) => n + t.text.length, 0);
-
   const { contentType, reason } = classifyPage(paths, images, text.items.length);
 
-  const bboxArea = bbox
-    ? Math.max(0, (bbox as LineworkBBox).maxX - (bbox as LineworkBBox).minX) *
-      Math.max(0, (bbox as LineworkBBox).maxY - (bbox as LineworkBBox).minY)
-    : 0;
+  const bb = bbox as LineworkBBox | null;
+  const bboxArea = bb ? Math.max(0, bb.maxX - bb.minX) * Math.max(0, bb.maxY - bb.minY) : 0;
 
   return {
     pageNumber,
-    rotation: page.rotate ?? 0,
-    widthPt: viewport.width / RENDER_SCALE,
-    heightPt: viewport.height / RENDER_SCALE,
-    widthPx,
-    heightPx,
-    renderScale: RENDER_SCALE,
+    rotation: walk.rotation,
+    widthPt: walk.widthPt,
+    heightPt: walk.heightPt,
+    widthPx: walk.widthPx,
+    heightPx: walk.heightPx,
+    renderScale: walk.renderScale,
     contentType,
     classificationReason: reason,
-    operatorCount: fnArray.length,
-    truncated,
+    operatorCount: walk.operatorCount,
+    truncated: walk.truncated,
     paths,
     images,
     text: {
@@ -732,8 +447,8 @@ export async function analyzePage(
       coverage: pageArea > 0 ? bboxArea / pageArea : 0,
       sample,
     },
-    maxFormDepth,
-    markedContentSections,
+    maxFormDepth: walk.maxFormDepth,
+    markedContentSections: walk.markedContentSections,
     durationMs: performance.now() - started,
     warnings,
   };

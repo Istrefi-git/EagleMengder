@@ -15,7 +15,7 @@
 // escapes i PDF-strenger (/WinAnsiEncoding), f.eks. `\262` = «²». Det tester
 // samtidig tekstdekodingen som romnavn-uttrekket senere avhenger av.
 
-export type SyntheticVariant = 'sparse' | 'dense' | 'raster' | 'mixed';
+export type SyntheticVariant = 'sparse' | 'dense' | 'raster' | 'mixed' | 'cross';
 
 /** 250 vannrette streker – nok til å passere LINEWORK_FLOOR. */
 const DENSE_LINE_COUNT = 250;
@@ -46,6 +46,21 @@ const SPARSE_GEOMETRY = [
   '100 300 m 150 380 250 380 300 300 c S', // Bezier -> kun telt
 ].join('\n');
 
+/**
+ * Geometri for å teste kryssdeteksjon.
+ *
+ * De to første linjene krysser ekte i (200, 200). De to siste er valgt slik at
+ * deres UENDELIGE linjer krysser i (500, 200), men selve segmentene ikke når
+ * dit – et fantom-kryss som IKKE skal gi et snappepunkt.
+ */
+const CROSS_GEOMETRY = [
+  '1 w',
+  '100 100 m 300 300 l S', // diagonal opp
+  '100 300 m 300 100 l S', // diagonal ned -> ekte kryss i (200,200)
+  '400 100 m 450 150 l S', // stopper lenge før x=500
+  '500 100 m 500 150 l S', // loddrett, stopper lenge før y=200
+].join('\n');
+
 /** Helsidedekkende 2x2 inline-bilde, ASCIIHex slik at fila forblir ASCII. */
 const FULL_PAGE_IMAGE = [
   'q 595 0 0 842 0 0 cm',
@@ -63,6 +78,8 @@ function contentFor(variant: SyntheticVariant): string {
       return `${FULL_PAGE_IMAGE}\n${TEXT_BLOCK}\n`;
     case 'mixed':
       return `${FULL_PAGE_IMAGE}\n${SPARSE_GEOMETRY}\n${denseLines()}\n${TEXT_BLOCK}\n`;
+    case 'cross':
+      return `${CROSS_GEOMETRY}\n`;
   }
 }
 
@@ -143,6 +160,18 @@ export interface SyntheticExpectation {
   textAt?: { text: string; x: number; y: number; fontSizePx: number }[];
   /** Tekst som må finnes ordrett – beviser WinAnsi-dekoding. */
   textContains?: string[];
+
+  // ── Geometry Layer (fase 2) ──
+  /** Antall Bézier-sub-ops walkeren skal ha sett. */
+  geoCurves?: number;
+  /** Minste antall segmenter etter kurve-utflating. */
+  geoMinSegments?: number;
+  /** Punkt som må finnes blant de utflatede segmentenes endepunkter. */
+  geoHasPoint?: [number, number][];
+  /** Snappeoppslag: forventet treff av gitt type på eksakt posisjon. */
+  geoSnap?: { at: [number, number]; radius: number; kind: string; expect: [number, number] }[];
+  /** Snappeoppslag som IKKE skal gi treff av gitt type (fantom-kryss). */
+  geoNoSnap?: { at: [number, number]; radius: number; kind: string }[];
 }
 
 export const SYNTHETIC_EXPECTATIONS: Record<SyntheticVariant, SyntheticExpectation> = {
@@ -177,6 +206,44 @@ export const SYNTHETIC_EXPECTATIONS: Record<SyntheticVariant, SyntheticExpectati
     ],
     textAt: [{ text: '101', x: 300, y: 364, fontSizePx: 24 }],
     textContains: ['14,2 m²', 'MÅLESTOKK 1:100'],
+
+    // Kurven `100 300 m 150 380 250 380 300 300 c` blir i bilde-pikselrom
+    // p0=(200,1084) p1=(300,924) p2=(500,924) p3=(600,1084). Nøyaktig antall
+    // delsegmenter avhenger av flathetstoleransen, men ENDEPUNKTENE må ligge
+    // eksakt der – det er det som beviser at utflatingen ikke forskyver kurven.
+    geoCurves: 1,
+    geoMinSegments: 11, // 7 rette + minst 4 fra kurven
+    geoHasPoint: [
+      [200, 1084],
+      [600, 1084],
+      [200, 484], // rektangelhjørne
+      [1000, 484], // enden av enkeltsegmentet
+    ],
+    geoSnap: [
+      { at: [202, 486], radius: 8, kind: 'endpoint', expect: [200, 484] },
+      // Midtpunkt på enkeltsegmentet (700,484)→(1000,484)
+      { at: [850, 487], radius: 8, kind: 'midpoint', expect: [850, 484] },
+    ],
+  },
+
+  cross: {
+    label: 'Cross – ekte kryss treffer, fantom-kryss gjør det ikke',
+    segments: 4,
+    subpaths: 4,
+    strokedPaths: 4,
+    curves: 0,
+    imageCount: 0,
+    geoMinSegments: 4,
+    geoSnap: [
+      // De to diagonalene krysser ekte i (200,200) -> (400, 1284)
+      { at: [403, 1287], radius: 10, kind: 'intersection', expect: [400, 1284] },
+    ],
+    geoNoSnap: [
+      // De uendelige linjene ville krysset i (500,200) -> (1000, 1284), men
+      // segmentene når aldri dit. Et treff her ville betydd at vi skjærer
+      // uendelige linjer i stedet for segmenter.
+      { at: [1000, 1284], radius: 12, kind: 'intersection' },
+    ],
   },
 
   dense: {
@@ -208,4 +275,10 @@ export const SYNTHETIC_EXPECTATIONS: Record<SyntheticVariant, SyntheticExpectati
   },
 };
 
-export const SYNTHETIC_VARIANTS: SyntheticVariant[] = ['sparse', 'dense', 'raster', 'mixed'];
+export const SYNTHETIC_VARIANTS: SyntheticVariant[] = [
+  'sparse',
+  'dense',
+  'raster',
+  'mixed',
+  'cross',
+];

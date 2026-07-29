@@ -10,6 +10,8 @@ import {
   analyzePageCached,
 } from '../lib/pdfAnalysis';
 import type { PdfContentType, PdfPageAnalysis } from '../lib/pdfAnalysis';
+import { extractGeometry, findSnapCandidates, getGeometryLayer, getSegment } from '../lib/pdfGeometry';
+import type { GeometryLayer } from '../lib/pdfGeometry';
 
 /** Diagnostikk for fase 1: viser hva den opplastede PDF-en faktisk inneholder.
  *  Rent lesende – ingenting herfra påvirker tegningen eller mengdelisten. */
@@ -22,6 +24,8 @@ export function PdfAnalysisDialog() {
   const fileName = useStore((s) => s.fileName);
 
   const [analysis, setAnalysis] = useState<PdfPageAnalysis | null>(null);
+  const [geometry, setGeometry] = useState<GeometryLayer | null>(null);
+  const [geoBusy, setGeoBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -34,6 +38,7 @@ export function PdfAnalysisDialog() {
     setBusy(true);
     setError(null);
     setAnalysis(null);
+    setGeometry(null);
 
     analyzePageCached(pdfDoc, currentPage, { shouldCancel: () => cancelledRef.current })
       .then((res) => {
@@ -193,6 +198,66 @@ export function PdfAnalysisDialog() {
                 />
               </Section>
 
+              <Section title="Geometry Layer">
+                {!geometry && (
+                  <>
+                    <p className="note">
+                      Trekker ut PDF-ens egen vektorgeometri med utflatede kurver, og bygger
+                      indeksen snappingen skal bruke. Kjøres på forespørsel, siden det koster mer
+                      enn selve analysen.
+                    </p>
+                    <button
+                      className="btn"
+                      disabled={geoBusy || !pdfDoc}
+                      onClick={() => {
+                        if (!pdfDoc) return;
+                        setGeoBusy(true);
+                        getGeometryLayer(pdfDoc, currentPage)
+                          .then(setGeometry)
+                          .catch((err: Error) => setError(err.message))
+                          .finally(() => setGeoBusy(false));
+                      }}
+                    >
+                      {geoBusy ? 'Trekker ut…' : 'Bygg geometrilag'}
+                    </button>
+                  </>
+                )}
+                {geometry && (
+                  <>
+                    <Stats
+                      rows={[
+                        ['Segmenter (etter utflating)', num(geometry.segmentCount)],
+                        ['Rå segmenter fra walker', num(geometry.stats.rawSegments)],
+                        ['Forkastet degenererte', num(geometry.stats.droppedDegenerate)],
+                        ['Klippebaner hoppet over', num(geometry.stats.clipPathsSkipped)],
+                        ['Bézier-kurver flatet ut', num(geometry.stats.curves)],
+                        ['Unike endepunkter', num(geometry.endpointCount)],
+                        ['Rutenett', `${geometry.grid.cols} × ${geometry.grid.rows} celler`],
+                        ['Cellestørrelse', `${round(geometry.grid.cellSize)} px`],
+                        ['Indeksoppføringer', num(geometry.grid.cellItems.length)],
+                        ['Uttrekkstid', `${geometry.durationMs.toFixed(1)} ms`],
+                        [
+                          'Utstrekning',
+                          geometry.bbox
+                            ? `${round(geometry.bbox.minX)}, ${round(geometry.bbox.minY)} → ` +
+                              `${round(geometry.bbox.maxX)}, ${round(geometry.bbox.maxY)}`
+                            : '—',
+                        ],
+                        [
+                          'Minnebruk (koordinater)',
+                          `${(geometry.coords.byteLength / 1024).toFixed(0)} KB`,
+                        ],
+                      ]}
+                    />
+                    {geometry.truncated && (
+                      <p className="pa-error">
+                        Geometriuttrekket er avkortet – tegningen har flere segmenter enn taket.
+                      </p>
+                    )}
+                  </>
+                )}
+              </Section>
+
               <Section title="Ytelse og forbehold">
                 <Stats
                   rows={[
@@ -343,6 +408,69 @@ function SelfTest() {
         for (const needle of exp.textContains ?? []) {
           const ok = a.text.items.some((x) => x.text.includes(needle));
           check(`tekst inneholder "${needle}"`, needle, ok ? 'funnet' : 'mangler', ok);
+        }
+
+        // ── Geometry Layer (fase 2) ──
+        const needsGeo =
+          exp.geoCurves !== undefined ||
+          exp.geoMinSegments !== undefined ||
+          exp.geoHasPoint ||
+          exp.geoSnap ||
+          exp.geoNoSnap;
+
+        if (needsGeo) {
+          const layer = await extractGeometry(doc, 1);
+
+          eq('geo.curves', exp.geoCurves, layer.stats.curves);
+
+          if (exp.geoMinSegments !== undefined) {
+            check(
+              'geo.segmentCount',
+              `>= ${exp.geoMinSegments}`,
+              layer.segmentCount,
+              layer.segmentCount >= exp.geoMinSegments,
+            );
+          }
+
+          for (const [px, py] of exp.geoHasPoint ?? []) {
+            let found = false;
+            for (let i = 0; i < layer.segmentCount && !found; i++) {
+              const s = getSegment(layer, i);
+              if (
+                (Math.abs(s.x1 - px) < 1e-6 && Math.abs(s.y1 - py) < 1e-6) ||
+                (Math.abs(s.x2 - px) < 1e-6 && Math.abs(s.y2 - py) < 1e-6)
+              ) {
+                found = true;
+              }
+            }
+            check(`geo punkt (${px},${py})`, 'finnes', found ? 'funnet' : 'mangler', found);
+          }
+
+          for (const q of exp.geoSnap ?? []) {
+            const cands = findSnapCandidates(layer, q.at[0], q.at[1], q.radius);
+            const hit = cands.find((c) => c.kind === q.kind);
+            const ok =
+              !!hit &&
+              Math.abs(hit.x - q.expect[0]) < 1e-6 &&
+              Math.abs(hit.y - q.expect[1]) < 1e-6;
+            check(
+              `snap ${q.kind} @(${q.at[0]},${q.at[1]})`,
+              `(${q.expect[0]},${q.expect[1]})`,
+              hit ? `(${hit.x},${hit.y})` : 'ingen treff',
+              ok,
+            );
+          }
+
+          for (const q of exp.geoNoSnap ?? []) {
+            const cands = findSnapCandidates(layer, q.at[0], q.at[1], q.radius);
+            const hit = cands.find((c) => c.kind === q.kind);
+            check(
+              `INGEN ${q.kind} @(${q.at[0]},${q.at[1]})`,
+              'ingen treff',
+              hit ? `fantom (${hit.x},${hit.y})` : 'ingen treff',
+              !hit,
+            );
+          }
         }
 
         out.push({ variant, label: exp.label, passed, failed });
