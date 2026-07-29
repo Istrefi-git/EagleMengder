@@ -63,6 +63,7 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
   const clamps = useStore((s) => s.clamps);
+  const customComponents = useStore((s) => s.customComponents);
   const standardLengths = useStore((s) => s.standardLengths);
   const quantityGroupBy = useStore((s) => s.quantityGroupBy);
   const quantitySortBy = useStore((s) => s.quantitySortBy);
@@ -73,7 +74,17 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const hasData = lines.length > 0 || symbols.length > 0;
 
   function exportExcel() {
-    const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
+    const report = buildQuantityReport(
+      lines,
+      symbols,
+      transitions,
+      branches,
+      scale,
+      standardLengths,
+      bends,
+      clamps,
+      customComponents,
+    );
     // Samme gruppering/sortering som brukeren har valgt i mengdelisten (QuantityPanel),
     // slik at eksporten alltid stemmer med det som vises på skjermen.
     const groups = groupQuantity(report, {

@@ -2,10 +2,16 @@ import { Link } from 'react-router-dom';
 import {
   Check,
   ClipboardList,
+  Download,
+  Droplet,
+  Flame,
   Layers,
+  LibraryBig,
   PenTool,
   Ruler,
   ScanSearch,
+  Snowflake,
+  Upload,
   Wind,
 } from 'lucide-react';
 import { SiteNav } from '../components/site/SiteNav';
@@ -24,8 +30,8 @@ const FEATURES = [
   },
   {
     icon: Layers,
-    title: 'NS 3451-kategorier',
-    text: 'Sanitær, varme, kjøling og ventilasjon strukturert i hovedkategorier og underkategorier, klart for eksport.',
+    title: 'Flere systemer, samme tegning',
+    text: 'Lag et nytt tilbud på samme PDF for å holde rør og ventilasjon i hver sin mengdeliste, uten å tegne opp underlaget på nytt.',
   },
   {
     icon: ClipboardList,
@@ -33,15 +39,29 @@ const FEATURES = [
     text: 'Lengder, bend, overganger og komponenter telles automatisk og oppdateres mens du tegner.',
   },
   {
-    icon: Wind,
-    title: 'VVS og ventilasjon',
-    text: 'Egne verktøy for kanaler med riktig dimensjonssett og symboler for spjeld, lyddempere og ventiler.',
+    icon: LibraryBig,
+    title: 'Stort symbolbibliotek',
+    text: 'Søkbart bibliotek med ventiler, spjeld, diffusorer og varmegjenvinnere – pluss dine egne komponenter med egne felter.',
   },
   {
     icon: Ruler,
     title: 'Prosjekt- og tilbudsstruktur',
     text: 'Organiser arbeidet i prosjekter og tilbud – hvert tilbud har sin egen mengdeliste.',
   },
+];
+
+const STEPS = [
+  { icon: Upload, title: 'Last opp', text: 'Dra inn PDF-tegningen – målestokken finnes automatisk eller kalibreres på to klikk.' },
+  { icon: PenTool, title: 'Tegn', text: 'Klikk rett på tegningen for å legge inn rør, kanaler, ventiler og spjeld.' },
+  { icon: ClipboardList, title: 'Se mengdelisten', text: 'Lengder, bend og komponenter telles opp automatisk mens du tegner.' },
+  { icon: Download, title: 'Eksporter', text: 'Last ned som Excel eller skriv ut en liggende PDF-rapport med tegning og mengdeliste.' },
+];
+
+const TRUST_ITEMS = [
+  { icon: Droplet, label: 'Sanitæranlegg' },
+  { icon: Flame, label: 'Varmeanlegg' },
+  { icon: Snowflake, label: 'Kjøleanlegg' },
+  { icon: Wind, label: 'Ventilasjonsanlegg' },
 ];
 
 const PLANS = [
@@ -118,9 +138,29 @@ export default function Landing() {
               <span className="site-mock-dot" />
               <span className="site-mock-dot" />
               <span className="site-mock-dot" />
+              <span className="site-mock-tab">ventilasjon.pdf</span>
             </div>
             <HeroDemo />
           </div>
+        </div>
+      </section>
+
+      <section className="site-section site-steps">
+        <div className="site-section-head">
+          <h2 className="site-section-title">Slik fungerer det</h2>
+          <p className="site-section-sub">Fra opplastet tegning til ferdig eksportert mengdeliste, i fire steg.</p>
+        </div>
+        <div className="site-steps-row">
+          {STEPS.map((s, i) => (
+            <div className="site-step" key={s.title}>
+              <span className="site-step-num">{i + 1}</span>
+              <span className="site-step-icon">
+                <s.icon size={18} />
+              </span>
+              <h3>{s.title}</h3>
+              <p>{s.text}</p>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -173,6 +213,18 @@ export default function Landing() {
                 {plan.cta}
               </Link>
             </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="site-trust-strip">
+        <span className="site-trust-label">Bygget for NS 3451</span>
+        <div className="site-trust-items">
+          {TRUST_ITEMS.map((t) => (
+            <span className="site-trust-item" key={t.label}>
+              <t.icon size={16} />
+              {t.label}
+            </span>
           ))}
         </div>
       </section>

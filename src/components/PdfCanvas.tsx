@@ -9,7 +9,6 @@ import { renderPage } from '../lib/pdf';
 import {
   POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
-  SYMBOL_DEFS,
   TEXT_ANNOTATION_TYPES,
   TEXT_BOX_ANNOTATION_TYPES,
   annotationTypeLabel,
@@ -19,9 +18,11 @@ import {
   defaultBranchFittingForPipe,
   dimensionsForMaterial,
   getBendAngles,
+  glyphShapeFor,
   isDuctSub,
   isRectDim,
   mergedOptions,
+  symbolDefFor,
   tagLabel,
 } from '../types';
 import type {
@@ -30,6 +31,7 @@ import type {
   BendEntity,
   BranchEntity,
   ClampEntity,
+  CustomComponentDef,
   LineEntity,
   MeasurementEntity,
   MeasurementType,
@@ -132,6 +134,7 @@ export function PdfCanvas() {
   const placeSymbolWithGuard = useStore((s) => s.placeSymbolWithGuard);
   const showAirflowArrows = useStore((s) => s.showAirflowArrows);
   const customSystems = useStore((s) => s.customSystems);
+  const customComponents = useStore((s) => s.customComponents);
   const symbolConfig = useStore((s) => s.symbolConfig);
   const setSymbolConfig = useStore((s) => s.setSymbolConfig);
   const customDimensions = useStore((s) => s.customDimensions);
@@ -1643,7 +1646,7 @@ export function PdfCanvas() {
 
   // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
   // samme palett som spøkelses-forhåndsvisningen ved Flytt/Kopier bruker.
-  const crosshairColor = tool === 'copy' ? '#2f9e44' : isTransformTool ? '#4c9aff' : '#7c4dff';
+  const crosshairColor = tool === 'copy' ? '#4c9aff' : isTransformTool ? '#14c08a' : '#7c4dff';
 
   const cursorStyle =
     isPan || isSpacePan
@@ -1852,7 +1855,8 @@ export function PdfCanvas() {
 
       {isSymbolTool && (() => {
         const symType = tool.slice('symbol:'.length) as SymbolEntity['type'];
-        const def = SYMBOL_DEFS[symType];
+        const def = symbolDefFor(symType, customComponents);
+        if (!def) return null;
         const cfg = symbolConfig[symType] ?? {};
         return (
           <div className="draw-hud symbol-hud">
@@ -2099,6 +2103,7 @@ export function PdfCanvas() {
                 editable={tool === 'select'}
                 invScale={invScale}
                 hideLabel={hideComponentLabels}
+                customComponents={customComponents}
                 color={
                   sym.type === 'supply_diffuser'
                     ? colorFor(SUBCATEGORIES['36.tilluft'], customColors)
@@ -2273,11 +2278,11 @@ export function PdfCanvas() {
             <Group x={cursor.x} y={cursor.y}>
               <Circle
                 radius={7 * invScale}
-                stroke={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor}
+                stroke={measureSnapKind === 'close' ? '#14c08a' : crosshairColor}
                 strokeWidth={1.5 * invScale}
                 fill="#fff"
               />
-              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor} />
+              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#14c08a' : crosshairColor} />
               <Text
                 text={
                   measureSnapKind === 'endpoint'
@@ -2291,7 +2296,7 @@ export function PdfCanvas() {
                 x={10 * invScale}
                 y={-16 * invScale}
                 fontSize={11 * invScale}
-                fill={measureSnapKind === 'close' ? '#2f9e44' : crosshairColor}
+                fill={measureSnapKind === 'close' ? '#14c08a' : crosshairColor}
                 fontStyle="bold"
               />
             </Group>
@@ -2302,8 +2307,8 @@ export function PdfCanvas() {
               y={Math.min(rubberBand.y0, rubberBand.y1)}
               width={Math.abs(rubberBand.x1 - rubberBand.x0)}
               height={Math.abs(rubberBand.y1 - rubberBand.y0)}
-              fill="rgba(76,154,255,0.12)"
-              stroke="#4c9aff"
+              fill="rgba(20,192,138,0.12)"
+              stroke="#14c08a"
               strokeWidth={1 * invScale}
               dash={[5 * invScale, 4 * invScale]}
             />
@@ -2364,14 +2369,14 @@ export function PdfCanvas() {
             <>
               <Line
                 points={hoverSnap.line.points}
-                stroke="#4c9aff"
+                stroke="#14c08a"
                 strokeWidth={10 * invScale}
                 opacity={0.35}
                 lineCap="round"
                 lineJoin="round"
               />
               <Group x={hoverSnap.x} y={hoverSnap.y}>
-                <Circle radius={6 * invScale} fill="#4c9aff" opacity={0.9} />
+                <Circle radius={6 * invScale} fill="#14c08a" opacity={0.9} />
                 <Text
                   x={10 * invScale}
                   y={-18 * invScale}
@@ -2410,24 +2415,24 @@ export function PdfCanvas() {
                   visuelle språk som måleverktøyets forhåndsvisning. */}
               <Line
                 points={[transformBase.x, transformBase.y, cursor.x, cursor.y]}
-                stroke={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                 strokeWidth={1.5 * invScale}
                 dash={[6 * invScale, 4 * invScale]}
               />
-              <Circle x={transformBase.x} y={transformBase.y} radius={3 * invScale} fill={tool === 'copy' ? '#2f9e44' : '#4c9aff'} />
+              <Circle x={transformBase.x} y={transformBase.y} radius={3 * invScale} fill={tool === 'copy' ? '#4c9aff' : '#14c08a'} />
               <Text
                 x={cursor.x + 10 * invScale}
                 y={cursor.y - 18 * invScale}
                 text={formatLengthMm(distance(transformBase.x, transformBase.y, cursor.x, cursor.y), scale.metersPerPixel)}
                 fontSize={12 * invScale}
-                fill={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                 fontStyle="bold"
               />
               {movePreview.lines.map((l) => (
                 <Line
                   key={l.id}
                   points={l.points}
-                  stroke={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                  stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                   strokeWidth={Math.max(mmToPx(dimensionDiameterMm(l.dimension), scale.metersPerPixel), 5 * invScale)}
                   opacity={0.45}
                   lineCap="round"
@@ -2441,7 +2446,7 @@ export function PdfCanvas() {
                     x={m.x}
                     y={m.y}
                     radius={5 * invScale}
-                    fill={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                    fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                     opacity={0.55}
                   />
                 ),
@@ -2452,7 +2457,7 @@ export function PdfCanvas() {
                   x={t.labelX}
                   y={t.labelY}
                   radius={5 * invScale}
-                  fill={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                  fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                   opacity={0.55}
                 />
               ))}
@@ -2462,7 +2467,7 @@ export function PdfCanvas() {
                   x={a.x}
                   y={a.y}
                   radius={6 * invScale}
-                  fill={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                  fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                   opacity={0.4}
                 />
               ))}
@@ -2470,7 +2475,7 @@ export function PdfCanvas() {
                 <Line
                   key={m.id}
                   points={m.points}
-                  stroke={tool === 'copy' ? '#2f9e44' : '#4c9aff'}
+                  stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
                   strokeWidth={2 * invScale}
                   opacity={0.5}
                   dash={[6 * invScale, 4 * invScale]}
@@ -3010,6 +3015,7 @@ interface SymbolNodeProps {
   color?: string;
   invScale: number;
   hideLabel: boolean;
+  customComponents: CustomComponentDef[];
   onSelect: () => void;
   onChange: (x: number, y: number) => void;
   onHover: (hovering: boolean) => void;
@@ -3097,10 +3103,12 @@ function SymbolNode({
   color,
   invScale,
   hideLabel,
+  customComponents,
   onSelect,
   onChange,
   onHover,
 }: SymbolNodeProps) {
+  const genericGlyph = glyphShapeFor(sym.type, customComponents);
   // Ventilasjonsaggregatets glyph er kun en ren firkant (symbols.tsx) – navnet og
   // målene skrives her, UTENFOR den ikke-uniformt skalerte gruppen (ellers ville
   // teksten blitt strukket sammen med boksen), og motroteres slik at den alltid
@@ -3134,7 +3142,13 @@ function SymbolNode({
       onDragEnd={(e) => onChange(e.target.x(), e.target.y())}
     >
       <Group scaleX={nodeScale.scaleX} scaleY={nodeScale.scaleY}>
-        <SymbolGlyph type={sym.type} selected={selected} showArrows={showAirflowArrows} color={color} />
+        <SymbolGlyph
+          type={sym.type}
+          selected={selected}
+          showArrows={showAirflowArrows}
+          color={color}
+          genericGlyph={genericGlyph}
+        />
       </Group>
       {showAhuLabel && (
         <Group x={-Math.max(ahuHalfW, 60 * invScale)} y={ahuHalfH + 6 * invScale} rotation={-sym.rotation}>

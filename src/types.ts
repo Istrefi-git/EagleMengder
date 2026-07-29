@@ -3,7 +3,12 @@
 // Rør/kanaler er organisert i et hierarki etter NS 3451-inspirerte
 // bygningsdeler:  Hovedkategori → Underkategori → Materiale (rørtype).
 
-export type SymbolType =
+/** De innebygde symboltypene – hver har sin egen håndtegnede Konva-case i
+ * symbols.tsx (de 16 opprinnelige) eller rendres via GenericGlyph fra en
+ * BUILTIN_SYMBOL_GLYPH-oppføring (de nyere). Se `SymbolType` under for typen som
+ * faktisk brukes i resten av appen (den tillater i tillegg egendefinerte
+ * komponent-id-er). */
+export type BuiltInSymbolType =
   | 'tee'
   | 'shutoff_valve'
   | 'control_valve'
@@ -19,7 +24,79 @@ export type SymbolType =
   | 'supply_diffuser'
   | 'extract_diffuser'
   | 'fan'
-  | 'air_handling_unit';
+  | 'air_handling_unit'
+  // Rør – sanitær/varme
+  | 'angle_shutoff_valve'
+  | 'reduction'
+  | 'bend_90'
+  | 'bend_45'
+  | 'tee_equal'
+  | 'manometer'
+  | 'thermometer'
+  | 'safety_valve'
+  | 'expansion_tank'
+  | 'circulation_pump'
+  | 'water_meter'
+  | 'drain_valve'
+  | 'air_vent'
+  // Rør – varme/energisentral
+  | 'heat_exchanger'
+  | 'pressure_reducing_valve'
+  | 'filter'
+  // Kanal – ventilasjon
+  | 'duct_bend_90'
+  | 'round_rect_transition'
+  | 'measurement_point'
+  | 'balancing_damper'
+  | 'ceiling_diffuser'
+  | 'wall_diffuser'
+  | 'grille'
+  | 'fresh_air_tower'
+  | 'roof_hood'
+  | 'condensate_drain'
+  | 'duct_heater'
+  | 'cooling_coil'
+  | 'heating_coil'
+  | 'rotary_heat_exchanger'
+  | 'cross_heat_exchanger';
+
+/** Typen brukt overalt ellers i appen for et symbols `type`-felt. Utover de
+ * innebygde typene (`BuiltInSymbolType`) tillater den også egendefinerte
+ * komponent-id-er (`custom:<uuid>`, se `CustomComponentDef`) – widened til
+ * `string` siden disse er brukergenererte og ikke kan uttrykkes som et lukket
+ * literal-union. Bruk `symbolDefFor()`/`glyphShapeFor()` for oppslag som er
+ * trygge for BEGGE typer, i stedet for å indeksere `SYMBOL_DEFS` direkte. */
+export type SymbolType = BuiltInSymbolType | (string & {});
+
+/** De faste grunnformene et symbol (innebygd eller egendefinert) kan rendres med
+ * via GenericGlyph i symbols.tsx, når det ikke har sin egen håndtegnede Konva-case. */
+export type GlyphShapeId =
+  | 'valve_bowtie'
+  | 'valve_bowtie_filled'
+  | 'damper'
+  | 'damper_labeled'
+  | 'diffuser'
+  | 'silencer_box'
+  | 'fan'
+  | 'circle'
+  | 'box'
+  | 'diamond'
+  | 'triangle'
+  | 'cross'
+  | 'cap_end';
+
+/** Bruker-definert komponent – lagres i brukerens personlige bibliotek
+ * (PersistedSettings.customComponents), global på tvers av tilbud, akkurat som
+ * customSystems/customDimensions. `id` er stabil og brukes som `SymbolEntity.type`
+ * for plasserte instanser, så den må ALDRI gjenbrukes etter sletting. */
+export interface CustomComponentDef {
+  id: string;
+  label: string;
+  kind: 'pipe' | 'duct';
+  glyphShape: GlyphShapeId;
+  color: string;
+  fields: SymbolFieldDef[];
+}
 
 export type AnnotationType =
   | 'text'
@@ -426,7 +503,17 @@ export const DEFAULT_THEME: Theme = 'light';
 
 const DIM_FIELD: SymbolFieldDef = { key: 'dimension', label: 'Dimensjon', kind: 'text', default: '' };
 
-export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
+const DN_FIELD: SymbolFieldDef = { key: 'dn', label: 'Dimensjon', kind: 'text', default: 'DN20' };
+const DUCT_DIM_FIELD: SymbolFieldDef = {
+  key: 'dimension',
+  label: 'Dimensjon',
+  kind: 'select',
+  options: KANAL_DIM,
+  default: KANAL_DIM[0],
+  customizable: true,
+};
+
+export const SYMBOL_DEFS: Record<BuiltInSymbolType, SymbolDef> = {
   tee: { type: 'tee', label: 'T-rør', kind: 'pipe', fields: [DIM_FIELD] },
   shutoff_valve: {
     type: 'shutoff_valve',
@@ -553,9 +640,147 @@ export const SYMBOL_DEFS: Record<SymbolType, SymbolDef> = {
       { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'm³/h', default: 0 },
     ],
   },
+
+  // ── Rør – sanitær/varme ────────────────────────────────────────────────
+  angle_shutoff_valve: { type: 'angle_shutoff_valve', label: 'Avstengningskran (vinkel)', kind: 'pipe', fields: [DN_FIELD] },
+  reduction: {
+    type: 'reduction',
+    label: 'Reduksjon',
+    kind: 'pipe',
+    fields: [
+      { key: 'dnIn', label: 'Dimensjon inn', kind: 'text', default: 'DN25' },
+      { key: 'dnOut', label: 'Dimensjon ut', kind: 'text', default: 'DN20' },
+    ],
+  },
+  bend_90: { type: 'bend_90', label: 'Bend 90°', kind: 'pipe', fields: [DN_FIELD] },
+  bend_45: { type: 'bend_45', label: 'Bend 45°', kind: 'pipe', fields: [DN_FIELD] },
+  tee_equal: { type: 'tee_equal', label: 'T-stykke likeløp', kind: 'pipe', fields: [DN_FIELD] },
+  manometer: { type: 'manometer', label: 'Manometer', kind: 'pipe', fields: [DN_FIELD] },
+  thermometer: { type: 'thermometer', label: 'Termometer', kind: 'pipe', fields: [DN_FIELD] },
+  safety_valve: {
+    type: 'safety_valve',
+    label: 'Sikkerhetsventil',
+    kind: 'pipe',
+    fields: [DN_FIELD, { key: 'setpoint', label: 'Settpunkt', kind: 'number', unit: 'bar', default: 0 }],
+  },
+  expansion_tank: {
+    type: 'expansion_tank',
+    label: 'Ekspansjonskar',
+    kind: 'pipe',
+    fields: [DN_FIELD, { key: 'volume', label: 'Volum', kind: 'number', unit: 'liter', default: 0 }],
+  },
+  circulation_pump: {
+    type: 'circulation_pump',
+    label: 'Sirkulasjonspumpe',
+    kind: 'pipe',
+    fields: [
+      DN_FIELD,
+      { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 },
+      { key: 'head', label: 'Løftehøyde', kind: 'number', unit: 'm', default: 0 },
+    ],
+  },
+  water_meter: { type: 'water_meter', label: 'Vannmåler', kind: 'pipe', fields: [DN_FIELD] },
+  drain_valve: { type: 'drain_valve', label: 'Bunnventil', kind: 'pipe', fields: [DN_FIELD] },
+  air_vent: { type: 'air_vent', label: 'Lufteventil', kind: 'pipe', fields: [{ ...DN_FIELD, default: 'DN15' }] },
+
+  // ── Rør – varme/energisentral ──────────────────────────────────────────
+  heat_exchanger: {
+    type: 'heat_exchanger',
+    label: 'Varmeveksler',
+    kind: 'pipe',
+    fields: [
+      { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 },
+      { key: 'dnPrimary', label: 'Primær dimensjon', kind: 'text', default: 'DN25' },
+      { key: 'dnSecondary', label: 'Sekundær dimensjon', kind: 'text', default: 'DN25' },
+    ],
+  },
+  pressure_reducing_valve: {
+    type: 'pressure_reducing_valve',
+    label: 'Trykkreduksjonsventil',
+    kind: 'pipe',
+    fields: [DN_FIELD, { key: 'setpoint', label: 'Settpunkt', kind: 'number', unit: 'bar', default: 0 }],
+  },
+  filter: { type: 'filter', label: 'Filter', kind: 'pipe', fields: [DN_FIELD] },
+
+  // ── Kanal – ventilasjon ─────────────────────────────────────────────────
+  duct_bend_90: { type: 'duct_bend_90', label: 'Bend 90° (kanal)', kind: 'duct', fields: [DUCT_DIM_FIELD] },
+  round_rect_transition: {
+    type: 'round_rect_transition',
+    label: 'Overgang rund/rektangulær',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD],
+  },
+  measurement_point: { type: 'measurement_point', label: 'Måleuttak', kind: 'duct', fields: [DUCT_DIM_FIELD] },
+  balancing_damper: {
+    type: 'balancing_damper',
+    label: 'Innregulering',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'l/s', default: 0 }],
+  },
+  ceiling_diffuser: {
+    type: 'ceiling_diffuser',
+    label: 'Diffusor tak',
+    kind: 'duct',
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '600x600' }],
+  },
+  wall_diffuser: {
+    type: 'wall_diffuser',
+    label: 'Diffusor vegg',
+    kind: 'duct',
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '600x600' }],
+  },
+  grille: {
+    type: 'grille',
+    label: 'Ventilrist',
+    kind: 'duct',
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: '600x600' }],
+  },
+  fresh_air_tower: {
+    type: 'fresh_air_tower',
+    label: 'Frisklufttårn',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'flow', label: 'Luftmengde', kind: 'number', unit: 'm³/h', default: 0 }],
+  },
+  roof_hood: { type: 'roof_hood', label: 'Takhatt/pipehatt', kind: 'duct', fields: [DUCT_DIM_FIELD] },
+  condensate_drain: {
+    type: 'condensate_drain',
+    label: 'Kondensvannavløp',
+    kind: 'duct',
+    fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: 'Ø32' }],
+  },
+  duct_heater: {
+    type: 'duct_heater',
+    label: 'Frostvakt/kanalvarmer',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 }],
+  },
+  cooling_coil: {
+    type: 'cooling_coil',
+    label: 'Etterkjøler/kjølebatteri',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 }],
+  },
+  heating_coil: {
+    type: 'heating_coil',
+    label: 'Etterkjøler/varmebatteri',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'power', label: 'Effekt', kind: 'number', unit: 'kW', default: 0 }],
+  },
+  rotary_heat_exchanger: {
+    type: 'rotary_heat_exchanger',
+    label: 'Roterende varmegjenvinner',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'efficiency', label: 'Virkningsgrad', kind: 'number', unit: '%', default: 0 }],
+  },
+  cross_heat_exchanger: {
+    type: 'cross_heat_exchanger',
+    label: 'Kryssvarmeveksler',
+    kind: 'duct',
+    fields: [DUCT_DIM_FIELD, { key: 'efficiency', label: 'Virkningsgrad', kind: 'number', unit: '%', default: 0 }],
+  },
 };
 
-export const SYMBOL_TYPE_ORDER: SymbolType[] = [
+export const SYMBOL_TYPE_ORDER: BuiltInSymbolType[] = [
   'tee',
   'shutoff_valve',
   'control_valve',
@@ -572,12 +797,111 @@ export const SYMBOL_TYPE_ORDER: SymbolType[] = [
   'silencer',
   'fan',
   'air_handling_unit',
+  'angle_shutoff_valve',
+  'reduction',
+  'bend_90',
+  'bend_45',
+  'tee_equal',
+  'manometer',
+  'thermometer',
+  'safety_valve',
+  'expansion_tank',
+  'circulation_pump',
+  'water_meter',
+  'drain_valve',
+  'air_vent',
+  'heat_exchanger',
+  'pressure_reducing_valve',
+  'filter',
+  'duct_bend_90',
+  'round_rect_transition',
+  'measurement_point',
+  'balancing_damper',
+  'ceiling_diffuser',
+  'wall_diffuser',
+  'grille',
+  'fresh_air_tower',
+  'roof_hood',
+  'condensate_drain',
+  'duct_heater',
+  'cooling_coil',
+  'heating_coil',
+  'rotary_heat_exchanger',
+  'cross_heat_exchanger',
 ];
 
+/** Grunnform (+ ev. bokstav-overlegg, samme mønster som MotorMarks bokstav-i-sirkel
+ * i symbols.tsx) for de NYERE innebygde symbolene som ikke har sin egen håndtegnede
+ * Konva-case – rendres via GenericGlyph. De 16 opprinnelige symbolene (tee →
+ * air_handling_unit) beholder sine egne case i symbols.tsx og trenger ikke en
+ * oppføring her. */
+export const BUILTIN_SYMBOL_GLYPH: Partial<Record<BuiltInSymbolType, { shape: GlyphShapeId; label?: string }>> = {
+  angle_shutoff_valve: { shape: 'valve_bowtie' },
+  reduction: { shape: 'triangle' },
+  bend_90: { shape: 'diamond' },
+  bend_45: { shape: 'diamond' },
+  tee_equal: { shape: 'cross' },
+  manometer: { shape: 'circle', label: 'M' },
+  thermometer: { shape: 'circle', label: 'T' },
+  safety_valve: { shape: 'valve_bowtie_filled' },
+  expansion_tank: { shape: 'box' },
+  circulation_pump: { shape: 'circle', label: 'P' },
+  water_meter: { shape: 'circle', label: 'V' },
+  drain_valve: { shape: 'valve_bowtie' },
+  air_vent: { shape: 'triangle' },
+  heat_exchanger: { shape: 'box' },
+  pressure_reducing_valve: { shape: 'valve_bowtie_filled' },
+  filter: { shape: 'diamond' },
+  duct_bend_90: { shape: 'diamond' },
+  round_rect_transition: { shape: 'triangle' },
+  measurement_point: { shape: 'circle' },
+  balancing_damper: { shape: 'damper_labeled', label: 'IR' },
+  ceiling_diffuser: { shape: 'diffuser' },
+  wall_diffuser: { shape: 'diffuser' },
+  grille: { shape: 'cross' },
+  fresh_air_tower: { shape: 'box' },
+  roof_hood: { shape: 'triangle' },
+  condensate_drain: { shape: 'circle' },
+  duct_heater: { shape: 'box' },
+  cooling_coil: { shape: 'box' },
+  heating_coil: { shape: 'box' },
+  rotary_heat_exchanger: { shape: 'circle' },
+  cross_heat_exchanger: { shape: 'cross' },
+};
+
+/** Slår opp definisjonen for en symboltype – innebygd ELLER egendefinert.
+ * Bruk denne i stedet for `SYMBOL_DEFS[type]` overalt der `type` kan være en
+ * brukerdefinert komponent-id, siden `SYMBOL_DEFS` kun kjenner de innebygde
+ * typene. Returnerer `undefined` for en dinglende type (f.eks. en egendefinert
+ * komponent som er slettet mens plasserte symboler av den typen fortsatt finnes) –
+ * kallsteder må håndtere dette (vis «Ukjent komponent», ikke krasj). */
+export function symbolDefFor(type: string, customComponents: CustomComponentDef[]): SymbolDef | undefined {
+  if (Object.prototype.hasOwnProperty.call(SYMBOL_DEFS, type)) return SYMBOL_DEFS[type as BuiltInSymbolType];
+  const custom = customComponents.find((c) => c.id === type);
+  return custom ? { type: custom.id, label: custom.label, kind: custom.kind, fields: custom.fields } : undefined;
+}
+
+/** Grunnform (+ ev. farge/bokstav) å tegne et symbol med via GenericGlyph, for
+ * innebygde typer som ikke har sin egen Konva-case OG for egendefinerte
+ * komponenter. Returnerer `undefined` for de 16 opprinnelige innebygde typene
+ * (de har sin egen case i symbols.tsx sin SymbolGlyph-switch) og for dinglende
+ * typer. */
+export function glyphShapeFor(
+  type: string,
+  customComponents: CustomComponentDef[],
+): { shape: GlyphShapeId; label?: string; color?: string } | undefined {
+  const builtin = BUILTIN_SYMBOL_GLYPH[type as BuiltInSymbolType];
+  if (builtin) return builtin;
+  const custom = customComponents.find((c) => c.id === type);
+  return custom ? { shape: custom.glyphShape, color: custom.color } : undefined;
+}
+
 /** Standardverdier for et symbols props-bag, avledet fra feltskjemaet. */
-export function defaultSymbolProps(type: SymbolType): Record<string, string | number> {
+export function defaultSymbolProps(type: string, customComponents: CustomComponentDef[]): Record<string, string | number> {
+  const def = symbolDefFor(type, customComponents);
   const props: Record<string, string | number> = {};
-  for (const f of SYMBOL_DEFS[type].fields) props[f.key] = f.default;
+  if (!def) return props;
+  for (const f of def.fields) props[f.key] = f.default;
   return props;
 }
 

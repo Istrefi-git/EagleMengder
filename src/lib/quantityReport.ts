@@ -6,6 +6,7 @@ import type {
   BendEntity,
   BranchEntity,
   ClampEntity,
+  CustomComponentDef,
   LineEntity,
   ScaleState,
   SymbolDef,
@@ -18,13 +19,13 @@ import {
   CLAMP_ROD_LENGTH_MM,
   DEFAULT_CLAMP_ROD_DIAMETER,
   SUBCATEGORIES,
-  SYMBOL_DEFS,
   SYMBOL_TYPE_ORDER,
   branchFittingLabel,
   categoryOf,
   jointCountForLength,
   rodLabel,
   jointLabel,
+  symbolDefFor,
 } from '../types';
 import { classifyBendAngle, polylineBendAngles, polylineLength } from './geometry';
 import { lengthMm } from './scale';
@@ -64,7 +65,7 @@ export interface QuantityReport {
   subDetail: Record<string, Record<string, number>>;
   totalBends: number;
   totalJoints: number;
-  symbolCounts: Record<SymbolType, number>;
+  symbolCounts: Partial<Record<SymbolType, number>>;
   /** Utstyr summert per utstyrstype + de faktiske feltverdiene (dimensjon, lengde,
    * luftmengde osv.) i stedet for bare ett samlet antall – slik at f.eks. to
    * Ø315×900mm-lyddempere vises som én rad («2 stk»), atskilt fra andre dimensjoner. */
@@ -114,6 +115,7 @@ export function buildQuantityReport(
   standardLengths: { pipe: number; duct: number },
   bends: BendEntity[] = [],
   clamps: ClampEntity[] = [],
+  customComponents: CustomComponentDef[] = [],
 ): QuantityReport {
   const mpp = scale.metersPerPixel;
 
@@ -217,27 +219,32 @@ export function buildQuantityReport(
     });
   }
 
-  const symbolCounts: Record<SymbolType, number> = SYMBOL_TYPE_ORDER.reduce(
-    (acc, t) => ({ ...acc, [t]: 0 }),
-    {} as Record<SymbolType, number>,
-  );
+  // Symboltyper som faktisk kan forekomme i denne rapporten – innebygde PLUSS
+  // brukerens egendefinerte komponenter, slik at deres rader ikke blir droppet.
+  const allSymbolTypes: string[] = [...SYMBOL_TYPE_ORDER, ...customComponents.map((c) => c.id)];
+  const symbolCounts: Partial<Record<SymbolType, number>> = {};
   const symbolDetail: Partial<Record<SymbolType, Record<string, number>>> = {};
   const symbolDetailIds: Partial<Record<SymbolType, Record<string, string[]>>> = {};
   for (const sym of symbols) {
-    symbolCounts[sym.type] += 1;
-    const def = SYMBOL_DEFS[sym.type];
+    symbolCounts[sym.type] = (symbolCounts[sym.type] ?? 0) + 1;
+    // Dinglende type (f.eks. en egendefinert komponent som er slettet mens plasserte
+    // symboler fortsatt finnes) telles over, men gir ingen mengderad uten skjema.
+    const def = symbolDefFor(sym.type, customComponents);
+    if (!def) continue;
     const key = symbolDetailKey(def, sym.props);
     const detail = (symbolDetail[sym.type] ??= {});
     detail[key] = (detail[key] ?? 0) + 1;
     pushId((symbolDetailIds[sym.type] ??= {}), key, sym.id);
   }
-  for (const t of SYMBOL_TYPE_ORDER) {
+  for (const t of allSymbolTypes) {
     const detail = symbolDetail[t];
     if (!detail) continue;
+    const def = symbolDefFor(t, customComponents);
+    if (!def) continue;
     for (const [key, count] of Object.entries(detail)) {
       rows.push({
         system: 'Komponenter',
-        underkategori: SYMBOL_DEFS[t].label,
+        underkategori: def.label,
         materiale: '',
         dimensjon: key === 'Standard' ? '' : key,
         lengdeMm: 0,

@@ -17,6 +17,7 @@ export function PrintableReport({ tilbudName }: Props) {
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
   const clamps = useStore((s) => s.clamps);
+  const customComponents = useStore((s) => s.customComponents);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
   const quantityGroupBy = useStore((s) => s.quantityGroupBy);
@@ -24,7 +25,17 @@ export function PrintableReport({ tilbudName }: Props) {
   const quantitySortDir = useStore((s) => s.quantitySortDir);
   const printImage = useStore((s) => s.printImage);
 
-  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
+  const report = buildQuantityReport(
+    lines,
+    symbols,
+    transitions,
+    branches,
+    scale,
+    standardLengths,
+    bends,
+    clamps,
+    customComponents,
+  );
   // Samme gruppering/sortering som brukeren har valgt i mengdelisten (QuantityPanel)
   // og i Excel-eksporten, slik at skjerm/PDF/Excel alltid stemmer overens.
   const groups = groupQuantity(report, {

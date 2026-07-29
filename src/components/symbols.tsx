@@ -1,5 +1,5 @@
 import { Arrow, Circle, Group, Line, Rect, Text } from 'react-konva';
-import type { BranchFittingType, SymbolType } from '../types';
+import type { BranchFittingType, GlyphShapeId, SymbolType } from '../types';
 
 const BASE = '#1f2933';
 const SEL = '#f5a623';
@@ -12,6 +12,11 @@ interface Props {
   /** Egendefinert strekfarge (brukes bl.a. for at tilluft-/avtrekksventiler skal ha
    * samme farge som tilhørende kanal). Overstyres av valgt-tilstand (oransje). */
   color?: string;
+  /** Grunnform + ev. bokstav-overlegg for symboler som IKKE har sin egen case i
+   * switchen under (nyere innebygde typer, eller egendefinerte komponenter) – slått
+   * opp av kalleren via `glyphShapeFor()` (som trenger `customComponents` fra
+   * store-en, derfor løses den utenfor denne rene props-komponenten). */
+  genericGlyph?: { shape: GlyphShapeId; label?: string; color?: string };
 }
 
 /** Tilluft-/avtrekksventil: firkantet diffusor-symbol (plan-visning av takdiffusor)
@@ -142,11 +147,99 @@ function DamperBase({ stroke, r, sideLabel }: { stroke: string; r: number; sideL
   );
 }
 
+/** Tegner en av de faste grunnformene (`GlyphShapeId`) – brukt for nyere innebygde
+ * symboler og for ALLE egendefinerte komponenter, i stedet for én hånd-tegnet
+ * Konva-case per type. Gjenbruker de samme hjelperne som de håndtegnede symbolene
+ * over der det passer (ventil/spjeld/diffusor/lyddemper), pluss noen få trivielle
+ * primitiver for de resterende grunnformene. */
+function GenericGlyph({ shape, stroke, label }: { shape: GlyphShapeId; stroke: string; label?: string }) {
+  const r = 11;
+  const sw = 2;
+  switch (shape) {
+    case 'valve_bowtie':
+      return <ValveBowtie stroke={stroke} r={r} selected={false} />;
+    case 'valve_bowtie_filled':
+      return <ValveBowtie stroke={stroke} r={r} selected={false} filledSide="left" />;
+    case 'damper':
+      return <DamperBase stroke={stroke} r={r} />;
+    case 'damper_labeled':
+      return <DamperBase stroke={stroke} r={r} sideLabel={label} />;
+    case 'diffuser':
+      return <DiffuserGlyph stroke={stroke} r={r} outward showArrows={false} />;
+    case 'silencer_box':
+      return (
+        <Rect x={-r * 1.5} y={-r * 0.85} width={r * 3} height={r * 1.7} stroke={stroke} strokeWidth={sw} />
+      );
+    case 'fan':
+      return <Circle radius={r} stroke={stroke} strokeWidth={sw} />;
+    case 'box':
+      return (
+        <Group>
+          <Rect x={-r} y={-r * 0.75} width={r * 2} height={r * 1.5} stroke={stroke} strokeWidth={sw} />
+          {label && (
+            <Text text={label} x={-r} y={-r * 0.32} width={r * 2} align="center" fontSize={r * 0.6} fontStyle="bold" fill={stroke} />
+          )}
+        </Group>
+      );
+    case 'diamond':
+      return (
+        <Line
+          points={[0, -r, r, 0, 0, r, -r, 0]}
+          closed
+          stroke={stroke}
+          strokeWidth={sw}
+        />
+      );
+    case 'triangle':
+      return (
+        <Line
+          points={[0, -r, r * 0.87, r * 0.5, -r * 0.87, r * 0.5]}
+          closed
+          stroke={stroke}
+          strokeWidth={sw}
+        />
+      );
+    case 'cross':
+      return (
+        <Group>
+          <Line points={[-r, 0, r, 0]} stroke={stroke} strokeWidth={sw} />
+          <Line points={[0, -r, 0, r]} stroke={stroke} strokeWidth={sw} />
+        </Group>
+      );
+    case 'cap_end':
+      return (
+        <Group>
+          <Line points={[-r, 0, r, 0]} stroke={stroke} strokeWidth={sw} />
+          <Line points={[r * 0.6, -r * 0.6, r * 0.6, r * 0.6]} stroke={stroke} strokeWidth={sw} />
+        </Group>
+      );
+    case 'circle':
+    default:
+      return (
+        <Group>
+          <Circle radius={r} stroke={stroke} strokeWidth={sw} />
+          {label && (
+            <Text
+              text={label}
+              x={-r}
+              y={-r * 0.42}
+              width={r * 2}
+              align="center"
+              fontSize={r * 0.7}
+              fontStyle="bold"
+              fill={stroke}
+            />
+          )}
+        </Group>
+      );
+  }
+}
+
 /**
  * Tegner et symbol sentrert i (0,0). Plassering/rotasjon/skala settes på
  * Group-en utenfor (i SymbolNode). Bruker enkle, gjenkjennbare VVS-symboler.
  */
-export function SymbolGlyph({ type, selected, showArrows = true, color }: Props) {
+export function SymbolGlyph({ type, selected, showArrows = true, color, genericGlyph }: Props) {
   const stroke = selected ? SEL : (color ?? BASE);
   const sw = 2;
   const r = 11;
@@ -262,8 +355,14 @@ export function SymbolGlyph({ type, selected, showArrows = true, color }: Props)
           fill={selected ? 'rgba(245,166,35,0.10)' : 'transparent'}
         />
       );
-    default:
-      return null;
+    default: {
+      if (!genericGlyph) return null;
+      // Egendefinert farge (satt av brukeren i CustomComponentDialog) vinner over
+      // kategori-/monteringsfargen, men taper for valgt-tilstand (samme prioritet som
+      // `color`-propen for de håndtegnede symbolene over).
+      const genStroke = selected ? SEL : (genericGlyph.color ?? stroke);
+      return <GenericGlyph shape={genericGlyph.shape} stroke={genStroke} label={genericGlyph.label} />;
+    }
   }
 }
 

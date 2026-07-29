@@ -1,62 +1,65 @@
-/* Lys er standardtema for tegneverktøyet. Mørk slås på via
-   data-theme="dark" på <html> (se :root[data-theme='dark'] under). */
+/* «Nordlys» – aurora-teal designsystem. Lys er standardtema for tegneverktøyet.
+   Mørk slås på via data-theme="dark" på <html> (se :root[data-theme='dark'] under).
+   Aksentfargen (#14C08A) er bevisst valgt for å ligge tydelig unna alle
+   NS 3451-kategorifargene i types.ts (rød/blå/brun/oransje/grønn) slik at
+   UI-aksent og tegningsfarger aldri kan forveksles på lerretet. */
 :root {
-  --bg: #f3f5f8;
+  --bg: #f6f7f5;
   --bg-2: #ffffff;
-  --bg-3: #eef1f5;
+  --bg-3: #eef1ef;
   --panel: #ffffff;
-  --border: #d7dce3;
-  --border-soft: #e3e7ec;
-  --text: #1b2330;
-  --text-dim: #5a6472;
-  --text-faint: #8e96a3;
-  --accent: #2f6fe0;
-  --accent-2: #2952cc;
-  --accent-grad: linear-gradient(135deg, #3b7df0 0%, #2952cc 100%);
-  --accent-soft: rgba(47, 111, 224, 0.1);
-  --accent-ring: rgba(47, 111, 224, 0.25);
-  --warn: #c97a0a;
-  --danger: #c4392b;
-  --ok: #1f8a4c;
-  --shadow: 0 8px 24px rgba(20, 24, 31, 0.12);
-  --shadow-sm: 0 1px 3px rgba(20, 24, 31, 0.08), 0 4px 12px rgba(20, 24, 31, 0.06);
-  --shadow-lg: 0 24px 60px rgba(20, 24, 31, 0.22), 0 8px 24px rgba(20, 24, 31, 0.12);
-  --radius: 8px;
-  --radius-lg: 14px;
-  --hover-bg: #e7eaef;
-  --hover-border: rgba(20, 24, 31, 0.14);
-  --canvas-void: #e4e7ec;
-  --canvas-grid: #c9ced6;
+  --border: #dde2de;
+  --border-soft: #e7ece8;
+  --text: #16201c;
+  --text-dim: #5c6b63;
+  --text-faint: #8b978f;
+  --accent: #14c08a;
+  --accent-2: #0e9b72;
+  --accent-grad: linear-gradient(135deg, #1ed6a0 0%, #0e9b72 100%);
+  --accent-soft: rgba(20, 192, 138, 0.12);
+  --accent-ring: rgba(20, 192, 138, 0.28);
+  --warn: #e8973a;
+  --danger: #d4553f;
+  --ok: #14c08a;
+  --shadow: 0 8px 24px rgba(16, 22, 18, 0.12);
+  --shadow-sm: 0 1px 3px rgba(16, 22, 18, 0.08), 0 4px 12px rgba(16, 22, 18, 0.06);
+  --shadow-lg: 0 24px 60px rgba(16, 22, 18, 0.22), 0 8px 24px rgba(16, 22, 18, 0.12);
+  --radius: 10px;
+  --radius-lg: 16px;
+  --hover-bg: #e7ebe6;
+  --hover-border: rgba(16, 22, 18, 0.14);
+  --canvas-void: #e3e8e4;
+  --canvas-grid: #c8cfc9;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   font-synthesis: none;
 }
 
 :root[data-theme='dark'] {
-  --bg: #0f1419;
-  --bg-2: #161c24;
-  --bg-3: #1d2530;
-  --panel: #141a22;
-  --border: #2a3440;
-  --border-soft: #232c37;
-  --text: #e6eaf0;
-  --text-dim: #9aa7b6;
-  --text-faint: #6b7888;
-  --accent: #4c9aff;
-  --accent-2: #2f80ed;
-  --accent-grad: linear-gradient(135deg, #4c9aff 0%, #2764d9 100%);
-  --accent-soft: rgba(76, 154, 255, 0.14);
-  --accent-ring: rgba(76, 154, 255, 0.3);
-  --warn: #f5a623;
-  --danger: #e2553b;
-  --ok: #27ae60;
+  --bg: #0e1512;
+  --bg-2: #131c18;
+  --bg-3: #182019;
+  --panel: #111813;
+  --border: #24322b;
+  --border-soft: #1d2822;
+  --text: #e8f0eb;
+  --text-dim: #93a69c;
+  --text-faint: #66786e;
+  --accent: #1ed6a0;
+  --accent-2: #14c08a;
+  --accent-grad: linear-gradient(135deg, #2ee8b0 0%, #14c08a 100%);
+  --accent-soft: rgba(30, 214, 160, 0.16);
+  --accent-ring: rgba(30, 214, 160, 0.32);
+  --warn: #f0a94e;
+  --danger: #e56a50;
+  --ok: #1ed6a0;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.4);
-  --hover-bg: #2a3440;
-  --hover-border: #38465699;
-  --canvas-void: #0a0d11;
-  --canvas-grid: #1a212b;
+  --hover-bg: #24322b;
+  --hover-border: #34473d99;
+  --canvas-void: #0a0f0c;
+  --canvas-grid: #1a231d;
 }
 
 /* ── Animasjoner (gjenbrukes på paneler, HUD-er, modaler osv.) ─────────── */
@@ -131,10 +134,10 @@
 @keyframes pulse-dot {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(31, 138, 76, 0.5);
+    box-shadow: 0 0 0 0 rgba(20, 192, 138, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(31, 138, 76, 0);
+    box-shadow: 0 0 0 4px rgba(20, 192, 138, 0);
   }
 }
 
@@ -511,15 +514,15 @@ body {
 
 /* ── Toolbar (venstre) ───────────────────────────────────────────────── */
 .toolbar {
-  width: 196px;
+  width: 216px;
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
-  padding: 14px 10px;
+  padding: 16px 12px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
   animation: hud-slide 0.3s var(--ease-out);
 }
 .tool-section {
@@ -557,10 +560,10 @@ body {
   left: 0;
   top: 50%;
   translate: 0 -50%;
-  width: 3px;
+  width: 4px;
   height: 0;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--accent-grad);
   transition: height 0.2s var(--ease-out);
 }
 .tool:hover:not(:disabled) {
@@ -574,7 +577,7 @@ body {
   color: var(--text);
 }
 .tool.active::before {
-  height: 60%;
+  height: 70%;
 }
 .tool:disabled {
   opacity: 0.35;
@@ -703,7 +706,7 @@ body {
 }
 .cat-kind.duct {
   color: var(--ok);
-  border-color: rgba(39, 174, 96, 0.4);
+  border-color: rgba(20, 192, 138, 0.4);
 }
 .collapse {
   max-height: 0;
@@ -1078,7 +1081,7 @@ body {
   min-height: 28px;
   padding: 3px 6px;
   background: rgba(255, 255, 255, 0.97);
-  border: 1px dashed #4c9aff;
+  border: 1px dashed #1ed6a0;
   border-radius: 4px;
   font-family: inherit;
   line-height: 1.2;
@@ -1221,7 +1224,7 @@ body {
 }
 .move-distance-input input:focus {
   outline: none;
-  border-color: var(--accent, #4c9aff);
+  border-color: var(--accent, #1ed6a0);
 }
 .move-distance-input span {
   color: #c4cdd8;
@@ -1400,69 +1403,9 @@ body {
   gap: 8px;
   color: var(--text-dim);
 }
-.qty-swatch {
-  width: 14px;
-  height: 4px;
-  border-radius: 2px;
-  border: 2px solid;
-  display: inline-block;
-}
-.qty-swatch.comp {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  border: 1.5px solid var(--text-faint);
-  background: transparent;
-}
 .qty-count {
   color: var(--text-faint);
   font-size: 11px;
-}
-.qty-cat-code {
-  font-variant-numeric: tabular-nums;
-  color: var(--accent);
-  font-weight: 700;
-  margin-right: 2px;
-}
-.qty-sub {
-  display: flex;
-  flex-direction: column;
-}
-.qty-detail {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 2px 4px 2px 26px;
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
-.qty-detail .qty-value {
-  color: var(--text-dim);
-  font-size: 11.5px;
-}
-.qty-detail.bend {
-  color: var(--warn);
-}
-.qty-detail.bend .qty-value {
-  color: var(--warn);
-}
-.qty-detail.joint {
-  color: #9b59b6;
-}
-.qty-detail.joint .qty-value {
-  color: #9b59b6;
-}
-.qty-detail.branch {
-  color: #2f9e44;
-}
-.qty-detail.branch .qty-value {
-  color: #2f9e44;
-}
-.qty-detail.comp {
-  color: var(--text-faint);
-}
-.qty-detail.comp .qty-value {
-  color: var(--text-dim);
 }
 .qty-empty-note {
   padding: 2px 4px 8px;
@@ -1471,10 +1414,6 @@ body {
 .qty-empty-root {
   padding: 16px;
   text-align: center;
-}
-.qty-auto-icon {
-  color: var(--text-faint);
-  flex-shrink: 0;
 }
 .badge.cat {
   border: 1px solid;
@@ -1706,6 +1645,161 @@ input[type='range'] {
 .auto-big.muted {
   color: var(--text-faint);
   font-size: 22px;
+}
+
+/* ── Symbolbibliotek + egendefinerte komponenter ───────────────────────── */
+.symbol-library {
+  width: 720px;
+  max-width: 94vw;
+  height: 560px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.symbol-library-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  gap: 12px;
+}
+.symbol-library-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  color: var(--text-faint);
+}
+.symbol-library-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  outline: none;
+}
+.symbol-library-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 14px;
+}
+.symbol-library-categories {
+  width: 190px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.symbol-library-cat {
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.symbol-library-cat:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+.symbol-library-cat.active {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.symbol-library-grid-wrap {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.symbol-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 8px;
+}
+.symbol-library-card,
+.symbol-library-card-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.symbol-library-card:hover,
+.symbol-library-card-main:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.symbol-library-card span {
+  line-height: 1.25;
+}
+.symbol-library-card.custom {
+  position: relative;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+.symbol-library-card.custom .symbol-library-card-main {
+  width: 100%;
+}
+.symbol-library-card-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  border: none;
+  background: var(--bg-2);
+  color: var(--text-faint);
+  border-radius: 6px;
+  padding: 3px;
+  cursor: pointer;
+  line-height: 0;
+}
+.symbol-library-card-remove:hover {
+  color: var(--danger);
+}
+.symbol-library-card.new {
+  justify-content: center;
+  color: var(--accent-2);
+  border-style: dashed;
+}
+.symbol-library-card.new:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Ny egendefinert komponent-dialog ───────────────────────────────────── */
+.custom-component-dialog {
+  width: 460px;
+}
+.glyph-shape-grid {
+  margin-top: 6px;
+}
+.custom-component-field-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.custom-component-field-row input,
+.custom-component-field-row select {
+  min-width: 0;
 }
 
 ::-webkit-scrollbar {

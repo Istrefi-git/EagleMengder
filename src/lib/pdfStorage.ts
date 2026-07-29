@@ -43,6 +43,15 @@ export async function loadPdfBytes(tilbudId: string): Promise<ArrayBuffer | null
   return result;
 }
 
+/** Kopierer en opplastet PDF fra ett tilbud til et annet – brukt når man lager et
+ * nytt tilbud på samme tegning (f.eks. for å tegne ventilasjon og rør separat på
+ * samme underlag). Gjør ingenting hvis kilden ikke har noen PDF ennå. */
+export async function copyPdfBytes(srcTilbudId: string, destTilbudId: string): Promise<void> {
+  const bytes = await loadPdfBytes(srcTilbudId);
+  if (!bytes) return;
+  await savePdfBytes(destTilbudId, bytes.slice(0));
+}
+
 export async function deletePdfBytes(tilbudId: string): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {

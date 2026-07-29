@@ -1,4 +1,5 @@
-import { SYMBOL_DEFS } from '../types';
+import { useStore } from '../store';
+import { symbolDefFor } from '../types';
 import type { SymbolEntity } from '../types';
 
 interface Props {
@@ -9,7 +10,15 @@ interface Props {
 
 /** Viser alle konfigurerte egenskaper for et utstyrssymbol når musen holdes over det. */
 export function SymbolTooltip({ symbol, screenX, screenY }: Props) {
-  const def = SYMBOL_DEFS[symbol.type];
+  const customComponents = useStore((s) => s.customComponents);
+  const def = symbolDefFor(symbol.type, customComponents);
+  if (!def) {
+    return (
+      <div className="symbol-tooltip" style={{ left: screenX, top: screenY }}>
+        <strong>Ukjent komponent</strong>
+      </div>
+    );
+  }
   return (
     <div className="symbol-tooltip" style={{ left: screenX, top: screenY }}>
       <strong>{def.label}</strong>

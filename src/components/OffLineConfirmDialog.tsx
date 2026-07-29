@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { SYMBOL_DEFS } from '../types';
+import { symbolDefFor } from '../types';
 
 /** Vises når brukeren klikker for å plassere utstyr et sted som ikke ligger på et
  * tegnet rør/kanal – ber om bekreftelse, med mulighet for å slå av advarselen. */
@@ -8,11 +8,12 @@ export function OffLineConfirmDialog() {
   const pending = useStore((s) => s.pendingOffLineSymbol);
   const confirm = useStore((s) => s.confirmPendingOffLineSymbol);
   const cancel = useStore((s) => s.cancelPendingOffLineSymbol);
+  const customComponents = useStore((s) => s.customComponents);
 
   const [suppressFuture, setSuppressFuture] = useState(false);
 
   if (!pending) return null;
-  const label = SYMBOL_DEFS[pending.type].label;
+  const label = symbolDefFor(pending.type, customComponents)?.label ?? 'Ukjent komponent';
 
   return (
     <div className="modal-backdrop" onMouseDown={cancel}>

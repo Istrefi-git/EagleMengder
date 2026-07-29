@@ -6,6 +6,7 @@ import type {
   BranchEntity,
   BranchFittingType,
   ClampEntity,
+  CustomComponentDef,
   LineEntity,
   MeasurementEntity,
   MeasurementType,
@@ -32,7 +33,7 @@ import {
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
-import { classifyBendAngle, closestPointOnPolyline, lineIntersect, polylineBendAngles } from './lib/geometry';
+import { classifyBendAngle, closestPointOnPolyline, polylineBendAngles } from './lib/geometry';
 import { dimensionDiameterMm } from './lib/dimension';
 import { mmToPx } from './lib/scale';
 
@@ -146,9 +147,10 @@ function syncTransitionsAtJoints(
  * er en ren funksjon som brukes av BÅDE spøkelses-forhåndsvisningen og selve
  * commit-en, slik at de aldri kan vise/gjøre forskjellige ting. */
 export interface MovePlan {
-  /** 'single' = nøyaktig én linje valgt → vinkelbevarende semantikk (moveSingleLine).
-   * 'rigid' = alt annet → hele den sammenhengende strekningen + resten av utvalget
-   * translateres rigid (nudgeSelected-semantikk). */
+  /** 'single' = nøyaktig én linje valgt → linjen selv flyttes rigid, og naboer som deler
+   * et endepunkt med den «skjøtes» (deres delte vertex følger med, motsatt ende står
+   * fast) – se applySingleLineMove. 'rigid' = alt annet → hele den sammenhengende
+   * strekningen + resten av utvalget translateres rigid (nudgeSelected-semantikk). */
   mode: 'single' | 'rigid';
   /** Kun for 'single'. */
   lineId?: string;
@@ -200,14 +202,14 @@ export function planMove(s: MoveSourceState, opts: { forceRigid?: boolean } = {}
   const pageLines = s.lines.filter((l) => l.page === s.currentPage);
   const seedLineIds = Array.from(ids).filter((id) => pageLines.some((l) => l.id === id));
 
-  // Vinkelbevarende én-linje-semantikk kun når AKKURAT ÉN linje er valgt via selectedId
-  // (ingen flervalg) – speiler nøyaktig det gamle skillet i piltast-håndteringen
-  // (`multiSelection.size === 0 && selectedKind === 'line'`). Et flervalg som
-  // tilfeldigvis bare inneholder én linje (f.eks. et gummibånd rundt ett segment)
-  // skal fortsatt gi rigid strekningsflytting, akkurat som nudgeSelected alltid har
-  // gjort – derav sjekken på `s.multiSelection.size === 0`, ikke bare antall id-er.
-  // `forceRigid` lar nudgeSelected eksplisitt be om rigid modus uansett.
-  if (!opts.forceRigid && s.multiSelection.size === 0 && seedLineIds.length === 1) {
+  // Rigid-flytt-med-nabo-skjøting kun når AKKURAT ÉN entitet totalt er valgt, og den
+  // er en linje – uansett HVORDAN den ble valgt (klikk, gummibånd rundt nøyaktig én,
+  // eller shift-klikk til nøyaktig én). Tidligere sjekket dette kun `selectedId` (ikke
+  // `multiSelection`), så en gummibånds- eller shift-klikk-seleksjon av nøyaktig én
+  // kanal trigget feilaktig «rigid»-modus (hele den sammenhengende strekningen flyttet
+  // seg via findConnectedLineIds). `forceRigid` lar nudgeSelected (piltaster) eksplisitt
+  // be om den gamle hele-strekningen-oppførselen uansett – uendret.
+  if (!opts.forceRigid && ids.size === 1 && seedLineIds.length === 1) {
     return {
       mode: 'single',
       lineId: seedLineIds[0],
@@ -358,11 +360,14 @@ export function applyMovePlan(s: MoveSourceState, plan: MovePlan, dx: number, dy
   };
 }
 
-/** Vinkelbevarende flytting av én enkelt linje: linjen selv beholder sin retning
- * (translateres), mens naboer beholder SIN retning – kun det delte skjøtpunktet
- * flyttes til skjæringen mellom de to linjene. Dette er selve algoritmen som lå i
- * moveSingleLine; trukket ut hit som en ren funksjon slik at Flytt-verktøyets
- * spøkelses-forhåndsvisning kan bruke nøyaktig samme utregning som commit-en. */
+/** Rigid flytting av én enkelt linje, med «skjøting» av naboer: L selv oversettes
+ * alltid nøyaktig med (dx,dy) – akkurat dit brukeren drar den – mens hver nabo som
+ * deler et endepunkt med L kun får SITT delte hjørnepunkt flyttet til L sitt nye
+ * endepunkt. Naboens motsatte ende rører vi ikke, så naboen endrer retning/lengde
+ * («skjøtes») for å nå den flyttede kanalen – i stedet for at L selv formes om via
+ * en skjæringsberegning (den gamle, vinkelbevarende algoritmen). Samme regel for
+ * T-forgreininger (≥2 naboer på ett endepunkt) som for én nabo – ingen
+ * spesialtilfelle lenger, siden L uansett bare translateres. */
 function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy: number): MoveDrawPatch {
   const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
   if (!line) {
@@ -384,21 +389,27 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
   const near = (ax: number, ay: number, bx: number, by: number) =>
     Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
 
-  // Retningen til linjen som flyttes (ende-til-ende). Etter flytting skal L beholde
-  // denne retningen (L-ny-linje = L translatert med (dx,dy)), slik at vinkelen mot
-  // naboene ikke endres.
   const n = line.points.length;
-  const dirL = { x: line.points[n - 2] - line.points[0], y: line.points[n - 1] - line.points[1] };
   const oldEndpoints = [
     { x: line.points[0], y: line.points[1] },
     { x: line.points[n - 2], y: line.points[n - 1] },
   ];
-
-  // For hvert endepunkt E på L: beregn hvor E havner (newEndpoint), og hvilke
-  // nabo-vertekser som skal flyttes dit. Naboer beholder sin egen retning – kun deres
-  // delte skjøt følger med – slik at bend-vinklene bevares nøyaktig.
+  // L flyttes alltid rigid – det nye endepunktet er ALLTID E+(dx,dy), uansett naboer.
   const newEndpoint = oldEndpoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+  // L sitt eget punkt nærmest hvert endepunkt (adjacent, ikke nødvendigvis motsatt
+  // endepunkt hvis L selv har indre punkter) – brukt til å regne om bend-vinkelen
+  // ved skjøtet, se turnAngleDeg under.
+  const adjacentOnL = [
+    n > 4 ? { x: line.points[2], y: line.points[3] } : oldEndpoints[1],
+    n > 4 ? { x: line.points[n - 4], y: line.points[n - 3] } : oldEndpoints[0],
+  ];
+
   const neighborMoves: { lineId: string; vertexIndex: number; x: number; y: number }[] = [];
+  // Naboens faste fjern-ende per endepunkt-indeks k – kun satt når nøyaktig én nabo
+  // deler det endepunktet (en ekte «bend»/fortsettelse, ikke en forgreining) – brukt
+  // til å regne om bend-markørens angleDeg, siden naboen nå kan stå i en annen vinkel
+  // enn før flyttingen.
+  const singleNeighborFar: ({ x: number; y: number } | null)[] = [null, null];
 
   oldEndpoints.forEach((E, k) => {
     const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
@@ -411,28 +422,20 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
         }
       }
     }
-
+    // Alle naboer (uansett antall) følger det delte skjøtpunktet til L sin NYE
+    // posisjon; deres motsatte ende står fast, så naboen «skjøtes» i stedet for at L
+    // selv formes om.
+    for (const nb of neighbors) {
+      neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: newEndpoint[k].x, y: newEndpoint[k].y });
+    }
     if (neighbors.length === 1) {
       const nb = neighbors[0];
       const nn = nb.line.points.length;
-      // Naboens faste fjern-ende (motsatt av skjøten) og dens opprinnelige retning.
       const sharedIsStart = nb.vertexIndex === 0;
-      const farX = sharedIsStart ? nb.line.points[nn - 2] : nb.line.points[0];
-      const farY = sharedIsStart ? nb.line.points[nn - 1] : nb.line.points[1];
-      const dirN = { x: E.x - farX, y: E.y - farY };
-      // Nytt skjøtpunkt = skjæring mellom L-ny-linje og naboens faste linje.
-      const hit = lineIntersect({ x: E.x + dx, y: E.y + dy }, dirL, { x: farX, y: farY }, dirN);
-      const target = hit ?? { x: E.x + dx, y: E.y + dy }; // fallback: parallell/kolineær → strekk
-      newEndpoint[k] = target;
-      neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: target.x, y: target.y });
-    } else if (neighbors.length >= 2) {
-      // T-rør/forgrening: bevar ikke vinkel – flytt skjøten og dra alle naboer dit.
-      for (const nb of neighbors) {
-        neighborMoves.push({ lineId: nb.line.id, vertexIndex: nb.vertexIndex, x: E.x + dx, y: E.y + dy });
-      }
-      newEndpoint[k] = { x: E.x + dx, y: E.y + dy };
+      singleNeighborFar[k] = sharedIsStart
+        ? { x: nb.line.points[nn - 2], y: nb.line.points[nn - 1] }
+        : { x: nb.line.points[0], y: nb.line.points[1] };
     }
-    // neighbors.length === 0 → fri ende: newEndpoint[k] er allerede E+(dx,dy).
   });
 
   const movesByLine = new Map<string, { vertexIndex: number; x: number; y: number }[]>();
@@ -444,11 +447,22 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
 
   // Hvor havner et gammelt skjøtpunkt? Brukt for å flytte markører til det NYE
   // skjøtpunktet (ikke bare med (dx,dy)), slik at de blir liggende riktig.
-  const remap = (x: number, y: number): { x: number; y: number } | null => {
+  const remap = (x: number, y: number): { k: number; point: { x: number; y: number } } | null => {
     for (let k = 0; k < oldEndpoints.length; k++) {
-      if (near(oldEndpoints[k].x, oldEndpoints[k].y, x, y)) return newEndpoint[k];
+      if (near(oldEndpoints[k].x, oldEndpoints[k].y, x, y)) return { k, point: newEndpoint[k] };
     }
     return null;
+  };
+
+  // Turn-vinkel i grader mellom (prev→cur) og (cur→next), samme formel som
+  // polylineBendAngles (geometry.ts) – brukt til å regne om en bend-markørs
+  // angleDeg når naboen på den ene siden har endret retning etter flyttingen.
+  const turnAngleDeg = (prev: { x: number; y: number }, cur: { x: number; y: number }, next: { x: number; y: number }): number => {
+    const a1 = Math.atan2(cur.y - prev.y, cur.x - prev.x);
+    const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
+    let turn = ((a2 - a1) * 180) / Math.PI;
+    turn = ((((turn + 180) % 360) + 360) % 360) - 180;
+    return Math.abs(turn);
   };
 
   // Påstikk/overganger sitter ofte MIDT PÅ kroppen til den flyttede linjen (ikke i et
@@ -466,18 +480,8 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
   return {
     lines: s.lines.map((l) => {
       if (l.id === lineId) {
-        // Endepunktene settes til newEndpoint (skjæring eller translatert) – begge ligger
-        // på L-ny-linje, så L beholder retningen. Ev. indre punkter translateres.
-        const pts = [...l.points];
-        pts[0] = newEndpoint[0].x;
-        pts[1] = newEndpoint[0].y;
-        pts[pts.length - 2] = newEndpoint[1].x;
-        pts[pts.length - 1] = newEndpoint[1].y;
-        for (let i = 2; i + 1 < pts.length - 2; i += 2) {
-          pts[i] += dx;
-          pts[i + 1] += dy;
-        }
-        return { ...l, points: pts };
+        // L oversettes rigid – hvert punkt (endepunkter OG indre punkter) shiftes likt.
+        return { ...l, points: l.points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy)) };
       }
       const moves = movesByLine.get(l.id);
       if (!moves) return l;
@@ -488,19 +492,24 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
       }
       return { ...l, points: pts };
     }),
-    // Skjøt-markører flyttes til det nye skjøtpunktet (vinkel bevart ⇒ angleDeg gyldig).
+    // Skjøt-markører flyttes til det nye skjøtpunktet. Der nøyaktig én nabo delte
+    // punktet (en ekte bend/fortsettelse), regnes angleDeg om siden naboen kan ha
+    // endret retning; ved forgreininger (0 eller ≥2 naboer) beholdes angleDeg som før.
     bends: s.bends.map((b) => {
       const r = remap(b.x, b.y);
-      return r ? { ...b, x: r.x, y: r.y } : b;
+      if (!r) return b;
+      const far = singleNeighborFar[r.k];
+      const angleDeg = far ? classifyBendAngle(turnAngleDeg(adjacentOnL[r.k], r.point, far)) : b.angleDeg;
+      return { ...b, x: r.point.x, y: r.point.y, angleDeg };
     }),
     transitions: s.transitions.map((t) => {
       const r = remap(t.x, t.y);
-      if (r) return { ...t, x: r.x, y: r.y };
+      if (r) return { ...t, x: r.point.x, y: r.point.y };
       return onBody(t.x, t.y, t.subId, t.material) ? { ...t, x: t.x + dx, y: t.y + dy } : t;
     }),
     branches: s.branches.map((b) => {
       const r = remap(b.x, b.y);
-      if (r) return { ...b, x: r.x, y: r.y };
+      if (r) return { ...b, x: r.point.x, y: r.point.y };
       return onBody(b.x, b.y, b.subId, b.material) ? { ...b, x: b.x + dx, y: b.y + dy } : b;
     }),
     // Tagger og montert utstyr på den flyttede linjen følger med.
@@ -581,6 +590,9 @@ interface PersistedSettings {
   /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen
    * i CATEGORIES-katalogen. */
   customColors: Record<string, string>;
+  /** Brukerens egendefinerte komponenter (symboler) – globalt bibliotek, akkurat som
+   * customSystems/customDimensions. Se CustomComponentDef i types.ts. */
+  customComponents: CustomComponentDef[];
   /** Sett inn klammer/gjengestag automatisk på nye kanaler/rør som tegnes. */
   autoInsertClamps: boolean;
   /** Avstand (mm) mellom klammer, per bygningsdel-type. */
@@ -633,6 +645,19 @@ function loadSettings(): PersistedSettings {
               ),
             )
           : {},
+      customComponents: Array.isArray(parsed.customComponents)
+        ? parsed.customComponents.filter(
+            (c: unknown): c is CustomComponentDef =>
+              !!c &&
+              typeof c === 'object' &&
+              typeof (c as CustomComponentDef).id === 'string' &&
+              typeof (c as CustomComponentDef).label === 'string' &&
+              ((c as CustomComponentDef).kind === 'pipe' || (c as CustomComponentDef).kind === 'duct') &&
+              typeof (c as CustomComponentDef).glyphShape === 'string' &&
+              typeof (c as CustomComponentDef).color === 'string' &&
+              Array.isArray((c as CustomComponentDef).fields),
+          )
+        : [],
       autoInsertClamps: typeof parsed.autoInsertClamps === 'boolean' ? parsed.autoInsertClamps : false,
       clampSpacing: {
         pipe:
@@ -671,6 +696,7 @@ function defaultSettings(): PersistedSettings {
     customSystems: [],
     customDimensions: {},
     customColors: {},
+    customComponents: [],
     autoInsertClamps: false,
     clampSpacing: { ...DEFAULT_CLAMP_SPACING },
     clampRodDiameter: DEFAULT_CLAMP_ROD_DIAMETER,
@@ -703,6 +729,7 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     customSystems: s.customSystems,
     customDimensions: s.customDimensions,
     customColors: s.customColors,
+    customComponents: s.customComponents,
     autoInsertClamps: s.autoInsertClamps,
     clampSpacing: s.clampSpacing,
     clampRodDiameter: s.clampRodDiameter,
@@ -794,6 +821,8 @@ interface AppState {
   customDimensions: Record<string, string[]>;
   /** Egendefinerte farger per underkategori (subId → hex), overstyrer standardfargen i katalogen. */
   customColors: Record<string, string>;
+  /** Brukerens egendefinerte komponenter (symboler) – globalt bibliotek. */
+  customComponents: CustomComponentDef[];
   /** Sett inn klammer/gjengestag automatisk på nye kanaler/rør som tegnes. */
   autoInsertClamps: boolean;
   /** Avstand (mm) mellom klammer, per bygningsdel-type. */
@@ -939,6 +968,14 @@ interface AppState {
   removeCustomDimension: (subId: string, dimension: string) => void;
   setCustomColor: (subId: string, color: string) => void;
   resetCustomColor: (subId: string) => void;
+  /** Lager en ny egendefinert komponent i brukerens bibliotek. Genererer en stabil
+   * `custom:<uuid>`-id og dedupliserer på label (case-insensitivt). */
+  addCustomComponent: (def: Omit<CustomComponentDef, 'id'>) => void;
+  /** Sletter en egendefinert komponent-DEFINISJON fra biblioteket. Symboler som
+   * allerede er plassert på tegningen beholder sin `type`-referanse (blir en
+   * dinglende type – håndteres trygt av symbolDefFor/glyphShapeFor med
+   * "Ukjent komponent"-fallback), de fjernes IKKE fra tegningen automatisk. */
+  removeCustomComponent: (id: string) => void;
 
   addAnnotation: (
     type: AnnotationType,
@@ -1155,6 +1192,7 @@ export const useStore = create<AppState>((set, get) => {
   customSystems: initialSettings.customSystems,
   customDimensions: initialSettings.customDimensions,
   customColors: initialSettings.customColors,
+  customComponents: initialSettings.customComponents,
   autoInsertClamps: initialSettings.autoInsertClamps,
   clampSpacing: initialSettings.clampSpacing,
   clampRodDiameter: initialSettings.clampRodDiameter,
@@ -1453,7 +1491,7 @@ export const useStore = create<AppState>((set, get) => {
       x,
       y,
       rotation,
-      props: { ...defaultSymbolProps(type), ...get().symbolConfig[type] },
+      props: { ...defaultSymbolProps(type, get().customComponents), ...get().symbolConfig[type] },
       mountedLineId,
       systemId,
     };
@@ -1549,6 +1587,23 @@ export const useStore = create<AppState>((set, get) => {
       delete next[subId];
       persistSettings(s, { customColors: next });
       return { customColors: next };
+    }),
+
+  addCustomComponent: (def) =>
+    set((s) => {
+      const label = def.label.trim();
+      if (!label || s.customComponents.some((c) => c.label.toLowerCase() === label.toLowerCase())) return s;
+      const component: CustomComponentDef = { ...def, label, id: nextId('custom') };
+      const next = [...s.customComponents, component];
+      persistSettings(s, { customComponents: next });
+      return { customComponents: next };
+    }),
+
+  removeCustomComponent: (id) =>
+    set((s) => {
+      const next = s.customComponents.filter((c) => c.id !== id);
+      persistSettings(s, { customComponents: next });
+      return { customComponents: next };
     }),
 
   addAnnotation: (type, x, y, extra) => {

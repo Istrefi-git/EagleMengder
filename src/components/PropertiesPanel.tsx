@@ -6,7 +6,6 @@ import {
   CLAMP_ROD_LENGTH_MM,
   DEFAULT_CLAMP_ROD_DIAMETER,
   SUBCATEGORIES,
-  SYMBOL_DEFS,
   TEXT_ANNOTATION_TYPES,
   annotationTypeLabel,
   branchFittingLabel,
@@ -14,6 +13,7 @@ import {
   colorFor,
   mergedDimensions,
   dimensionsForMaterial,
+  symbolDefFor,
   tagLabel,
 } from '../types';
 import { polygonArea, polylineLength } from '../lib/geometry';
@@ -42,6 +42,7 @@ export function PropertiesPanel() {
   const deleteMany = useStore((s) => s.deleteMany);
   const updateManyLineProps = useStore((s) => s.updateManyLineProps);
   const customSystems = useStore((s) => s.customSystems);
+  const customComponents = useStore((s) => s.customComponents);
   const customDimensions = useStore((s) => s.customDimensions);
   const customColors = useStore((s) => s.customColors);
 
@@ -500,7 +501,23 @@ export function PropertiesPanel() {
   // symbol
   const sym = symbols.find((s) => s.id === selectedId);
   if (!sym) return null;
-  const def = SYMBOL_DEFS[sym.type];
+  const def = symbolDefFor(sym.type, customComponents);
+  if (!def) {
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Ukjent komponent</h3>
+        </div>
+        <p className="muted">
+          Denne komponenten er slettet fra biblioteket. Du kan fortsatt fjerne den fra tegningen.
+        </p>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Slett symbol
+        </button>
+      </section>
+    );
+  }
   return (
     <section className="properties-panel">
       <div className="panel-header">

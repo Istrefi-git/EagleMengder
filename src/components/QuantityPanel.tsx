@@ -18,6 +18,7 @@ export function QuantityPanel() {
   const branches = useStore((s) => s.branches);
   const bends = useStore((s) => s.bends);
   const clamps = useStore((s) => s.clamps);
+  const customComponents = useStore((s) => s.customComponents);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
   const focusMode = useStore((s) => s.focusMode);
@@ -32,7 +33,17 @@ export function QuantityPanel() {
   const setSortDir = useStore((s) => s.setQuantitySortDir);
   const mpp = scale.metersPerPixel;
 
-  const report = buildQuantityReport(lines, symbols, transitions, branches, scale, standardLengths, bends, clamps);
+  const report = buildQuantityReport(
+    lines,
+    symbols,
+    transitions,
+    branches,
+    scale,
+    standardLengths,
+    bends,
+    clamps,
+    customComponents,
+  );
   const groups = groupQuantity(report, { groupBy, sortBy, sortDir });
   const hasAnyData = report.rows.length > 0;
 

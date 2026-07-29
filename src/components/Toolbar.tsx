@@ -11,14 +11,13 @@ import {
   Circle,
   Cloud,
   Copy,
-  Cylinder,
   Eye,
   EyeOff,
-  Fan,
   GitFork,
   Hand,
   Highlighter,
   LandPlot,
+  LibraryBig,
   Minus,
   MessageSquareText,
   MousePointer2,
@@ -50,10 +49,11 @@ import {
   VavDamperIcon,
 } from './equipmentIcons';
 import { useStore } from '../store';
-import { CATEGORIES, SYMBOL_DEFS, SYMBOL_TYPE_ORDER, colorFor, dimensionsForMaterial, isDuctSub, isRectDim, RECT_DUCT_MATERIAL } from '../types';
-import type { SubCategoryDef, SymbolType, ToolMode } from '../types';
+import { CATEGORIES, colorFor, dimensionsForMaterial, isDuctSub, isRectDim, RECT_DUCT_MATERIAL } from '../types';
+import type { SubCategoryDef, ToolMode } from '../types';
+import { SymbolLibraryDialog } from './SymbolLibraryDialog';
 
-const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>> = {
+export const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>> = {
   tee: GitFork,
   shutoff_valve: ShutoffValveIcon,
   control_valve: ControlValveIcon,
@@ -71,9 +71,6 @@ const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>
   fan: FanIcon,
   air_handling_unit: Box,
 };
-
-const VENT_SYMBOLS: SymbolType[] = SYMBOL_TYPE_ORDER.filter((t) => SYMBOL_DEFS[t].kind === 'duct');
-const PIPE_SYMBOLS: SymbolType[] = SYMBOL_TYPE_ORDER.filter((t) => SYMBOL_DEFS[t].kind === 'pipe');
 
 export function Toolbar() {
   const tool = useStore((s) => s.tool);
@@ -97,8 +94,7 @@ export function Toolbar() {
     Object.fromEntries(CATEGORIES.map((c) => [c.code, true])),
   );
   const toggleCat = (code: string) => setCollapsedCats((c) => ({ ...c, [code]: !c[code] }));
-  const [ventOpen, setVentOpen] = useState(false);
-  const [pipeCompOpen, setPipeCompOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   // «Tekst & skyer» og «Verktøy» kan minimeres på samme måte som komponentseksjonene –
   // starter åpne siden markup-/måleverktøyene brukes ofte.
   const [textOpen, setTextOpen] = useState(true);
@@ -235,61 +231,18 @@ export function Toolbar() {
       </div>
 
       <div className="tool-section">
-        <button className="cat-header-toggle" onClick={() => setVentOpen((o) => !o)} disabled={disabled}>
-          <span className={`cat-caret ${ventOpen ? 'open' : ''}`}>
-            <ChevronRight size={13} />
+        <span className="tool-heading">Komponenter</span>
+        <button
+          className={`tool ${tool.startsWith('symbol:') ? 'active' : ''}`}
+          onClick={() => setLibraryOpen(true)}
+          disabled={disabled}
+          title="Åpne symbolbiblioteket – ventiler, spjeld, diffusorer og dine egne komponenter"
+        >
+          <span className="tool-icon">
+            <LibraryBig size={16} />
           </span>
-          <Fan size={13} className="cat-icon" />
-          <span className="cat-label">Komponenter – Ventilasjon</span>
+          <span className="tool-label">Bibliotek…</span>
         </button>
-        <div className={`collapse ${ventOpen ? 'open' : ''}`}>
-          <div className="tool-grid">
-            {VENT_SYMBOLS.map((t) => {
-              const Icon = SYMBOL_ICONS[t];
-              const label = SYMBOL_DEFS[t].label;
-              return (
-                <button
-                  key={t}
-                  className={`tool-grid-item ${tool === `symbol:${t}` ? 'active' : ''}`}
-                  onClick={() => setTool(`symbol:${t}`)}
-                  disabled={disabled}
-                  title={label}
-                >
-                  <Icon size={17} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className="tool-section">
-        <button className="cat-header-toggle" onClick={() => setPipeCompOpen((o) => !o)} disabled={disabled}>
-          <span className={`cat-caret ${pipeCompOpen ? 'open' : ''}`}>
-            <ChevronRight size={13} />
-          </span>
-          <Cylinder size={13} className="cat-icon" />
-          <span className="cat-label">Komponenter – Rør</span>
-        </button>
-        <div className={`collapse ${pipeCompOpen ? 'open' : ''}`}>
-          <div className="tool-grid">
-            {PIPE_SYMBOLS.map((t) => {
-              const Icon = SYMBOL_ICONS[t];
-              const label = SYMBOL_DEFS[t].label;
-              return (
-                <button
-                  key={t}
-                  className={`tool-grid-item ${tool === `symbol:${t}` ? 'active' : ''}`}
-                  onClick={() => setTool(`symbol:${t}`)}
-                  disabled={disabled}
-                  title={label}
-                >
-                  <Icon size={17} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
       </div>
 
       <div className="tool-section">
@@ -349,6 +302,7 @@ export function Toolbar() {
           <span className="tool-label">Sett målestokk</span>
         </button>
       </div>
+      {libraryOpen && <SymbolLibraryDialog onClose={() => setLibraryOpen(false)} />}
     </aside>
   );
 }

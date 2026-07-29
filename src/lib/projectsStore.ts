@@ -35,6 +35,13 @@ interface ProjectsState {
   deleteProject: (id: string) => void;
 
   addTilbud: (projectId: string, name: string) => Tilbud;
+  /** Lager et nytt tilbud som deler PDF-tegning, målestokk og sist brukte rørtype/
+   * dimensjon-valg med kilde-tilbudet, men med en HELT TOM mengdeliste – slik at man
+   * kan tegne f.eks. ventilasjon og rør separat på samme underlag. Selve PDF-bytene må
+   * kopieres separat i UI-laget (`copyPdfBytes` i `lib/pdfStorage.ts`), siden
+   * IndexedDB-tilgang ikke hører hjemme i denne (synkrone, localStorage-baserte)
+   * store-en. Returnerer `null` hvis kilde-tilbudet ikke finnes. */
+  duplicateTilbudDrawing: (sourceId: string, name: string) => Tilbud | null;
   deleteTilbud: (id: string) => void;
   saveTilbudSnapshot: (id: string, snapshot: TilbudSnapshot) => void;
 }
@@ -44,7 +51,7 @@ const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${idCou
 
 export const useProjectsStore = create<ProjectsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       projects: [],
       tilbud: [],
 
@@ -77,6 +84,39 @@ export const useProjectsStore = create<ProjectsState>()(
           name,
           createdAt: new Date().toISOString(),
           snapshot: null,
+        };
+        set((s) => ({ tilbud: [...s.tilbud, t] }));
+        return t;
+      },
+
+      duplicateTilbudDrawing: (sourceId, name) => {
+        const source = get().tilbud.find((t) => t.id === sourceId);
+        if (!source) return null;
+        const src = source.snapshot;
+        const t: Tilbud = {
+          id: nextId('tilbud'),
+          projectId: source.projectId,
+          name,
+          createdAt: new Date().toISOString(),
+          snapshot: src
+            ? {
+                lines: [],
+                symbols: [],
+                transitions: [],
+                branches: [],
+                bends: [],
+                annotations: [],
+                tags: [],
+                clamps: [],
+                measurements: [],
+                scale: src.scale,
+                lineConfig: src.lineConfig,
+                symbolConfig: {},
+                fileName: src.fileName,
+                numPages: src.numPages,
+                currentPage: src.currentPage,
+              }
+            : null,
         };
         set((s) => ({ tilbud: [...s.tilbud, t] }));
         return t;

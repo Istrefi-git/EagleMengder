@@ -4,10 +4,15 @@ import { X } from 'lucide-react';
 interface Props {
   onSave: (name: string) => void;
   onClose: () => void;
+  /** Overstyrer tittel/knappetekst – brukt til å gjenbruke modalen for «Kopier
+   * tegning» (nytt tilbud på samme PDF), i tillegg til vanlig «Nytt tilbud». */
+  title?: string;
+  submitLabel?: string;
+  initialName?: string;
 }
 
-export function TilbudFormModal({ onSave, onClose }: Props) {
-  const [name, setName] = useState('');
+export function TilbudFormModal({ onSave, onClose, title, submitLabel, initialName }: Props) {
+  const [name, setName] = useState(initialName ?? '');
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -19,7 +24,7 @@ export function TilbudFormModal({ onSave, onClose }: Props) {
     <div className="site-modal-backdrop" onMouseDown={onClose}>
       <div className="site-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="site-modal-head">
-          <h2>Nytt tilbud</h2>
+          <h2>{title ?? 'Nytt tilbud'}</h2>
           <button className="site-modal-close" onClick={onClose}>
             <X size={16} />
           </button>
@@ -37,7 +42,7 @@ export function TilbudFormModal({ onSave, onClose }: Props) {
             />
           </label>
           <button className="site-btn primary full" type="submit">
-            Opprett tilbud
+            {submitLabel ?? 'Opprett tilbud'}
           </button>
         </form>
       </div>

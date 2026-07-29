@@ -2,30 +2,33 @@
    Holdt bevisst separat fra CAD-temaet i styles.css (selve tegneverktøyet).
    Uttrykk: dype blågradienter, frostet glass-nav, myke løft på kort. */
 
+/* «Nordlys» – samme aurora-teal-palett og tallverdier som styles.css (editoren),
+   bare i .site sitt eget navnerom siden markedsførings-/dashboard-sidene har en
+   egen, bevisst separat stilramme fra selve tegneverktøyet. */
 .site {
-  --s-bg: #f7f8fb;
+  --s-bg: #f6f7f5;
   --s-surface: #ffffff;
-  --s-surface-2: #f0f2f6;
-  --s-border: #e4e7ee;
-  --s-border-strong: #cfd4dd;
-  --s-text: #10141c;
-  --s-text-dim: #5b6472;
-  --s-text-faint: #8a93a1;
-  --s-accent: #2f5fe0;
-  --s-accent-hover: #2448b8;
-  --s-accent-soft: #eaf0fe;
-  --s-grad: linear-gradient(135deg, #3b7df0 0%, #2448c4 100%);
-  --s-grad-text: linear-gradient(110deg, #10141c 30%, #2f5fe0 85%);
-  --s-ring: rgba(47, 95, 224, 0.22);
-  --s-success: #1f8a4c;
-  --s-success-soft: #e8f6ee;
-  --s-danger: #c4392b;
+  --s-surface-2: #eef1ef;
+  --s-border: #dde2de;
+  --s-border-strong: #c7cfc9;
+  --s-text: #16201c;
+  --s-text-dim: #5c6b63;
+  --s-text-faint: #8b978f;
+  --s-accent: #14c08a;
+  --s-accent-hover: #0e9b72;
+  --s-accent-soft: #e3f7ee;
+  --s-grad: linear-gradient(135deg, #1ed6a0 0%, #0e9b72 100%);
+  --s-grad-text: linear-gradient(110deg, #16201c 30%, #14c08a 85%);
+  --s-ring: rgba(20, 192, 138, 0.22);
+  --s-success: #14c08a;
+  --s-success-soft: #e3f7ee;
+  --s-danger: #d4553f;
   --s-danger-soft: #fbeae7;
-  --s-radius: 14px;
-  --s-radius-sm: 9px;
-  --s-shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.05), 0 4px 14px rgba(20, 24, 31, 0.05);
-  --s-shadow-md: 0 12px 32px rgba(20, 24, 31, 0.1), 0 2px 6px rgba(20, 24, 31, 0.05);
-  --s-shadow-lg: 0 32px 80px rgba(23, 37, 84, 0.16), 0 8px 24px rgba(23, 37, 84, 0.08);
+  --s-radius: 16px;
+  --s-radius-sm: 10px;
+  --s-shadow-sm: 0 1px 2px rgba(16, 22, 18, 0.05), 0 4px 14px rgba(16, 22, 18, 0.05);
+  --s-shadow-md: 0 12px 32px rgba(16, 22, 18, 0.1), 0 2px 6px rgba(16, 22, 18, 0.05);
+  --s-shadow-lg: 0 32px 80px rgba(14, 27, 22, 0.16), 0 8px 24px rgba(14, 27, 22, 0.08);
   --s-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --s-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
@@ -36,6 +39,63 @@
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Mørk modus for forside/dashboard – finnes ikke fra før (kun editoren hadde
+   mørk modus). Lys er den ubetingede standarden (`.site`-blokken over), akkurat
+   som DEFAULT_THEME i types.ts – mørk slås KUN på ved et eksplisitt valg (samme
+   `data-theme`-attributt på <html> som editoren setter globalt via
+   document.documentElement.dataset.theme, så valget følger brukeren mellom
+   editor og forside/dashboard) eller, når temaet aldri er satt eksplisitt i det
+   hele tatt, når operativsystemet selv foretrekker mørkt. Et eksplisitt «lys»-valg
+   vinner alltid over system-preferansen (`:not([data-theme='light'])`-vakten). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .site {
+    --s-bg: #0e1512;
+    --s-surface: #131c18;
+    --s-surface-2: #182019;
+    --s-border: #24322b;
+    --s-border-strong: #34473d;
+    --s-text: #e8f0eb;
+    --s-text-dim: #93a69c;
+    --s-text-faint: #66786e;
+    --s-accent: #1ed6a0;
+    --s-accent-hover: #2ee8b0;
+    --s-accent-soft: rgba(30, 214, 160, 0.16);
+    --s-grad: linear-gradient(135deg, #2ee8b0 0%, #14c08a 100%);
+    --s-grad-text: linear-gradient(110deg, #e8f0eb 30%, #1ed6a0 85%);
+    --s-ring: rgba(30, 214, 160, 0.3);
+    --s-success: #1ed6a0;
+    --s-success-soft: rgba(30, 214, 160, 0.16);
+    --s-danger: #e56a50;
+    --s-danger-soft: rgba(229, 106, 80, 0.16);
+    --s-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.25);
+    --s-shadow-md: 0 12px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+    --s-shadow-lg: 0 32px 80px rgba(0, 0, 0, 0.55), 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+}
+[data-theme='dark'] .site {
+  --s-bg: #0e1512;
+  --s-surface: #131c18;
+  --s-surface-2: #182019;
+  --s-border: #24322b;
+  --s-border-strong: #34473d;
+  --s-text: #e8f0eb;
+  --s-text-dim: #93a69c;
+  --s-text-faint: #66786e;
+  --s-accent: #1ed6a0;
+  --s-accent-hover: #2ee8b0;
+  --s-accent-soft: rgba(30, 214, 160, 0.16);
+  --s-grad: linear-gradient(135deg, #2ee8b0 0%, #14c08a 100%);
+  --s-grad-text: linear-gradient(110deg, #e8f0eb 30%, #1ed6a0 85%);
+  --s-ring: rgba(30, 214, 160, 0.3);
+  --s-success: #1ed6a0;
+  --s-success-soft: rgba(30, 214, 160, 0.16);
+  --s-danger: #e56a50;
+  --s-danger-soft: rgba(229, 106, 80, 0.16);
+  --s-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.25);
+  --s-shadow-md: 0 12px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --s-shadow-lg: 0 32px 80px rgba(0, 0, 0, 0.55), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 @keyframes s-rise {
@@ -95,6 +155,17 @@
   backdrop-filter: blur(14px) saturate(1.4);
   -webkit-backdrop-filter: blur(14px) saturate(1.4);
   border-bottom: 1px solid rgba(20, 24, 31, 0.06);
+  transition: background 0.2s, border-color 0.2s;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .site-nav {
+    background: rgba(14, 21, 18, 0.78);
+    border-bottom-color: rgba(232, 240, 235, 0.08);
+  }
+}
+[data-theme='dark'] .site-nav {
+  background: rgba(14, 21, 18, 0.78);
+  border-bottom-color: rgba(232, 240, 235, 0.08);
 }
 .site-nav-inner {
   max-width: 1180px;
@@ -134,8 +205,11 @@
   font-size: 14px;
   color: var(--s-text-dim);
 }
+.site-nav-links a {
+  transition: color 0.15s;
+}
 .site-nav-links a:hover {
-  color: var(--s-text);
+  color: var(--s-accent);
 }
 .site-nav-spacer {
   flex: 1;
@@ -235,9 +309,9 @@
   inset: -40% -20% auto;
   height: 130%;
   background:
-    radial-gradient(600px 420px at 18% 30%, rgba(59, 125, 240, 0.14), transparent 65%),
-    radial-gradient(720px 480px at 85% 12%, rgba(36, 72, 196, 0.12), transparent 60%),
-    radial-gradient(420px 320px at 65% 80%, rgba(31, 138, 76, 0.07), transparent 60%);
+    radial-gradient(600px 420px at 18% 30%, rgba(20, 192, 138, 0.14), transparent 65%),
+    radial-gradient(720px 480px at 85% 12%, rgba(46, 232, 176, 0.12), transparent 60%),
+    radial-gradient(420px 320px at 65% 80%, rgba(14, 155, 114, 0.08), transparent 60%);
   pointer-events: none;
 }
 .site-hero-inner {
@@ -257,7 +331,7 @@
   font-weight: 600;
   color: var(--s-accent);
   background: var(--s-accent-soft);
-  border: 1px solid rgba(47, 95, 224, 0.18);
+  border: 1px solid rgba(20, 192, 138, 0.18);
   border-radius: 999px;
   padding: 5px 12px;
   margin-bottom: 18px;
@@ -322,37 +396,21 @@
   border-radius: 50%;
   background: var(--s-border-strong);
 }
+.site-mock-tab {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--s-text-faint);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
 .site-mock-canvas {
   border-radius: 9px;
-  background: #1b212b;
+  background: #0e1512;
   height: 280px;
   position: relative;
   overflow: hidden;
 }
-.site-mock-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--s-border);
-  font-size: 12.5px;
-  color: var(--s-text-dim);
-}
-.site-mock-row:last-child {
-  border-bottom: none;
-}
-.site-mock-row strong {
-  color: var(--s-text);
-  font-weight: 600;
-}
-.site-mock-table {
-  margin-top: 14px;
-  border: 1px solid var(--s-border);
-  border-radius: 9px;
-  overflow: hidden;
-}
 
-/* ── Animert hero-demo (erstatter statisk .site-mock-canvas/-table-innhold) ──
+/* ── Animert hero-demo (rendres inne i .site-mock-canvas over) ──────────────
    Se src/components/site/HeroDemo.tsx. Alle animerte elementer deler NØYAKTIG
    samme 14s varighet uten egen animation-delay – innbyrdes rekkefølge kodes
    utelukkende via keyframe-prosent, slik at alt alltid ligger i takt uansett når
@@ -784,7 +842,7 @@
 .site-feature-card:hover {
   transform: translateY(-5px);
   box-shadow: var(--s-shadow-md);
-  border-color: rgba(47, 95, 224, 0.3);
+  border-color: rgba(20, 192, 138, 0.3);
 }
 .site-feature-icon {
   display: grid;
@@ -810,6 +868,106 @@
   font-size: 14px;
   color: var(--s-text-dim);
   line-height: 1.55;
+}
+
+/* ── Slik fungerer det ───────────────────────────────────────────────── */
+.site-steps {
+  padding-top: 56px;
+  padding-bottom: 56px;
+}
+.site-steps-row {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+.site-step {
+  position: relative;
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  border-radius: var(--s-radius);
+  padding: 24px 20px;
+  transition: transform 0.25s var(--s-ease), box-shadow 0.25s, border-color 0.25s;
+}
+.site-step:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--s-shadow-md);
+  border-color: rgba(20, 192, 138, 0.3);
+}
+.site-step-num {
+  position: absolute;
+  top: -11px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--s-grad);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  box-shadow: 0 4px 10px var(--s-ring);
+}
+.site-step-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--s-accent-soft);
+  color: var(--s-accent);
+  margin-bottom: 14px;
+}
+.site-step h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.site-step p {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: var(--s-text-dim);
+  line-height: 1.55;
+}
+
+/* ── Tillits-stripe ──────────────────────────────────────────────────── */
+.site-trust-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px 32px;
+  padding: 28px 24px;
+  border-top: 1px solid var(--s-border);
+  border-bottom: 1px solid var(--s-border);
+  background: var(--s-surface);
+}
+.site-trust-label {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--s-text-faint);
+}
+.site-trust-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.site-trust-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--s-surface-2);
+  border: 1px solid var(--s-border);
+  font-size: 13px;
+  color: var(--s-text-dim);
+}
+.site-trust-item svg {
+  color: var(--s-accent);
 }
 
 /* ── Priser ──────────────────────────────────────────────────────────── */
@@ -898,7 +1056,7 @@
   max-width: 880px;
   margin: 0 auto;
   text-align: center;
-  background: linear-gradient(135deg, #16233f 0%, #1c2f66 55%, #2448c4 130%);
+  background: linear-gradient(135deg, #10201a 0%, #123a2c 55%, #0e9b72 130%);
   border-radius: 22px;
   padding: 60px 40px;
   color: #fff;
@@ -909,7 +1067,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(480px 260px at 80% -20%, rgba(91, 141, 255, 0.35), transparent 70%);
+  background: radial-gradient(480px 260px at 80% -20%, rgba(46, 232, 176, 0.35), transparent 70%);
   pointer-events: none;
 }
 .site-cta h2 {
@@ -960,8 +1118,8 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(560px 400px at 20% 15%, rgba(59, 125, 240, 0.12), transparent 65%),
-    radial-gradient(640px 460px at 85% 90%, rgba(36, 72, 196, 0.1), transparent 60%);
+    radial-gradient(560px 400px at 20% 15%, rgba(20, 192, 138, 0.12), transparent 65%),
+    radial-gradient(640px 460px at 85% 90%, rgba(46, 232, 176, 0.1), transparent 60%);
   pointer-events: none;
 }
 .site-auth-card {
@@ -1210,7 +1368,7 @@
   transition: opacity 0.2s;
 }
 .project-card:hover {
-  border-color: rgba(47, 95, 224, 0.35);
+  border-color: rgba(20, 192, 138, 0.35);
   box-shadow: var(--s-shadow-md);
   transform: translateY(-4px);
 }
@@ -1323,7 +1481,7 @@
   animation: s-rise 0.35s var(--s-ease) both;
 }
 .tilbud-row:hover {
-  border-color: rgba(47, 95, 224, 0.35);
+  border-color: rgba(20, 192, 138, 0.35);
   box-shadow: var(--s-shadow-md);
   transform: translateX(4px);
 }
