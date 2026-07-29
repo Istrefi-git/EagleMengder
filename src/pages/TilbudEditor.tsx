@@ -8,6 +8,7 @@ import { QuantityPanel } from '../components/QuantityPanel';
 import { PropertiesPanel } from '../components/PropertiesPanel';
 import { ScaleDialog } from '../components/ScaleDialog';
 import { SettingsDialog } from '../components/SettingsDialog';
+import { PdfAnalysisDialog } from '../components/PdfAnalysisDialog';
 import { PrintableReport } from '../components/PrintableReport';
 import { OffLineConfirmDialog } from '../components/OffLineConfirmDialog';
 import { useStore } from '../store';
@@ -131,6 +132,7 @@ export default function TilbudEditor() {
       </div>
       <ScaleDialog />
       <SettingsDialog />
+      <PdfAnalysisDialog />
       <OffLineConfirmDialog />
       <PrintableReport tilbudName={tilbud.name} />
     </div>

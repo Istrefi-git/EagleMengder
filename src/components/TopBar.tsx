@@ -12,6 +12,7 @@ import {
   Printer,
   Redo2,
   Ruler,
+  ScanSearch,
   Settings2,
   Sun,
   Undo2,
@@ -49,6 +50,7 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const requestFit = useStore((s) => s.requestFit);
   const openScaleDialog = useStore((s) => s.openScaleDialog);
   const openSettingsDialog = useStore((s) => s.openSettingsDialog);
+  const openPdfAnalysisDialog = useStore((s) => s.openPdfAnalysisDialog);
   const pipeRenderStyle = useStore((s) => s.pipeRenderStyle);
   const setPipeRenderStyle = useStore((s) => s.setPipeRenderStyle);
   const theme = useStore((s) => s.theme);
@@ -281,6 +283,15 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
           <button className="icon-menu-item" onClick={openSettingsDialog}>
             <Settings2 size={14} />
             Innstillinger
+          </button>
+          <button
+            className="icon-menu-item"
+            onClick={openPdfAnalysisDialog}
+            disabled={numPages === 0}
+            title="Vis hva PDF-en faktisk inneholder: vektorgeometri, tekst og bilder"
+          >
+            <ScanSearch size={14} />
+            PDF-analyse
           </button>
         </IconMenu>
       </div>

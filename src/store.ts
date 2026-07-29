@@ -803,6 +803,9 @@ interface AppState {
   // Standardlengder for automatiske skjøter (konfigurerbart via innstillingsdialogen)
   standardLengths: { pipe: number; duct: number };
   settingsDialogOpen: boolean;
+  /** Diagnostikkdialog som viser hva den opplastede PDF-en faktisk inneholder.
+   *  Bevisst ikke persistert – en diagnostikk skal aldri stå åpen etter reload. */
+  pdfAnalysisDialogOpen: boolean;
   /** Skjuler verktøylinje/lerret og lar mengdelisten fylle hele arbeidsflaten */
   focusMode: boolean;
   /** Visningsstil for tegnede rør/kanaler: 3D-sylinder eller enkel strek (med symboler) */
@@ -1056,6 +1059,8 @@ interface AppState {
   setTheme: (theme: Theme) => void;
   openSettingsDialog: () => void;
   closeSettingsDialog: () => void;
+  openPdfAnalysisDialog: () => void;
+  closePdfAnalysisDialog: () => void;
   toggleFocusMode: () => void;
 
   deleteSelected: () => void;
@@ -1183,6 +1188,7 @@ export const useStore = create<AppState>((set, get) => {
 
   standardLengths: { pipe: initialSettings.pipe, duct: initialSettings.duct },
   settingsDialogOpen: false,
+  pdfAnalysisDialogOpen: false,
   focusMode: false,
   pipeRenderStyle: initialSettings.pipeRenderStyle,
   theme: initialSettings.theme,
@@ -1896,6 +1902,8 @@ export const useStore = create<AppState>((set, get) => {
     }),
   openSettingsDialog: () => set({ settingsDialogOpen: true }),
   closeSettingsDialog: () => set({ settingsDialogOpen: false }),
+  openPdfAnalysisDialog: () => set({ pdfAnalysisDialogOpen: true }),
+  closePdfAnalysisDialog: () => set({ pdfAnalysisDialogOpen: false }),
   toggleFocusMode: () => set((s) => ({ focusMode: !s.focusMode })),
 
   deleteSelected: () => {
@@ -2344,6 +2352,7 @@ export const useStore = create<AppState>((set, get) => {
       scaleDialogTab: 'manual',
       calibrationDistancePx: null,
       settingsDialogOpen: false,
+      pdfAnalysisDialogOpen: false,
       focusMode: false,
     }),
   };

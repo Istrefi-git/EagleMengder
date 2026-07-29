@@ -1647,6 +1647,185 @@ input[type='range'] {
   font-size: 22px;
 }
 
+/* ── PDF-analyse (diagnostikk, fase 1) ─────────────────────────────────── */
+.pdf-analysis {
+  width: 760px;
+  max-width: 94vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+.pdf-analysis .modal-body {
+  overflow-y: auto;
+}
+.pa-section {
+  margin-bottom: 20px;
+}
+.pa-section-title {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+.pa-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pa-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 11px;
+  background: var(--bg-2);
+  font-size: 12.5px;
+}
+.pa-stat span {
+  color: var(--text-dim);
+}
+.pa-stat strong {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.pa-badge {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 650;
+  color: #fff;
+  background: var(--text-faint);
+}
+.pa-badge.vector {
+  background: var(--accent-grad);
+}
+.pa-badge.raster {
+  background: var(--warn);
+}
+.pa-badge.mixed {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--warn) 100%);
+}
+.pa-reason {
+  margin: 10px 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pa-table-wrap {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.pa-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pa-table th,
+.pa-table td {
+  padding: 5px 9px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pa-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-weight: 600;
+  text-align: right;
+}
+.pa-table th:first-child,
+.pa-table td.pa-text-cell {
+  text-align: left;
+  font-variant-numeric: normal;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pa-error,
+.pa-warning {
+  margin: 8px 0 0;
+  padding: 8px 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.pa-error {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+.pa-warning {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent);
+}
+.pa-details {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 12px;
+}
+.pa-details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.pa-json {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--bg-3);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.pa-selftest {
+  margin-top: 18px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 14px;
+}
+.pa-selftest-summary {
+  margin: 12px 0 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pa-selftest-summary.ok {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.pa-selftest-summary.fail {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.pa-selftest-row {
+  padding: 6px 0;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pa-selftest-fail {
+  margin-top: 4px;
+  padding-left: 14px;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+.pa-selftest-fail code {
+  font-size: 11px;
+}
+
 /* ── Symbolbibliotek + egendefinerte komponenter ───────────────────────── */
 .symbol-library {
   width: 720px;
