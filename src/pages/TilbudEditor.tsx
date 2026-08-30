@@ -18,10 +18,23 @@ import { loadPdf } from '../lib/pdf';
 
 function getHint(tool: string): string | null {
   if (tool.startsWith('line:'))
-    return 'Klikk for å legge til knekkpunkter · dobbeltklikk eller Enter for å avslutte · Esc avbryter';
+    return (
+      'Klikk for knekkpunkter · skriv et tall for eksakt lengde (Tab = vinkel) · ' +
+      'Shift tegner fritt · Backspace angrer siste punkt · høyreklikk, dobbeltklikk ' +
+      'eller Enter avslutter · Esc avbryter'
+    );
   if (tool.startsWith('symbol:')) return 'Klikk på tegningen for å plassere symbolet';
   if (tool === 'calibrate') return 'Klikk to punkter med kjent avstand for å kalibrere målestokken';
   if (tool === 'pan') return 'Dra for å panorere · rull for å zoome';
+  if (tool === 'move' || tool === 'copy')
+    return 'Velg objekter · klikk et basispunkt · klikk der de skal havne · skriv et tall for eksakt avstand i mm · Shift låser vinkel';
+  if (tool === 'split') return 'Klikk på et rør/en kanal for å dele det i to der du klikker';
+  if (tool === 'tag') return 'Klikk på et rør, en kanal eller en komponent for å merke det';
+  if (tool === 'select')
+    return 'Klikk for å velge · Shift-klikk for flere · dra for gummibånd · høyreklikk på et rør setter inn klammer';
+  if (tool === 'measure:distance') return 'Klikk to punkter · snapper til endepunkter og utstyr';
+  if (tool === 'measure:area') return 'Klikk punkt for punkt rundt rommet · Enter lukker figuren';
+  if (tool.startsWith('annotation:')) return 'Klikk og dra – eller klikk, flytt, klikk – for å tegne';
   return null;
 }
 

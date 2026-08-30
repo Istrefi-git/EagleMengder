@@ -49,7 +49,15 @@ import {
   VavDamperIcon,
 } from './equipmentIcons';
 import { useStore } from '../store';
-import { CATEGORIES, colorFor, dimensionsForMaterial, isDuctSub, isRectDim, RECT_DUCT_MATERIAL } from '../types';
+import {
+  CATEGORIES,
+  colorFor,
+  dimensionsForMaterial,
+  isDuctSub,
+  isRectDim,
+  RECT_DUCT_MATERIAL,
+  SUBCATEGORIES,
+} from '../types';
 import type { SubCategoryDef, ToolMode } from '../types';
 import { SymbolLibraryDialog } from './SymbolLibraryDialog';
 
@@ -76,6 +84,7 @@ export function Toolbar() {
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
   const lineConfig = useStore((s) => s.lineConfig);
+  const recentLineTypes = useStore((s) => s.recentLineTypes);
   const setLineSelection = useStore((s) => s.setLineSelection);
   const openScaleDialog = useStore((s) => s.openScaleDialog);
   const pdfDoc = useStore((s) => s.pdfDoc);
@@ -88,11 +97,9 @@ export function Toolbar() {
   const setCustomColor = useStore((s) => s.setCustomColor);
   const disabled = !pdfDoc;
 
-  // Alle kategorier starter lukket – brukeren åpner kun det som faktisk skal tegnes,
-  // i stedet for å møte alle underkategorier/utstyr utfoldet på én gang.
-  const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(CATEGORIES.map((c) => [c.code, true])),
-  );
+  // Kategoriene starter ÅPNE. Å måtte folde ut før man i det hele tatt ser
+  // underkategoriene var det første av fire klikk før man fikk tegnet noe.
+  const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>({});
   const toggleCat = (code: string) => setCollapsedCats((c) => ({ ...c, [code]: !c[code] }));
   const [libraryOpen, setLibraryOpen] = useState(false);
   // «Tekst & skyer» og «Verktøy» kan minimeres på samme måte som komponentseksjonene –
@@ -106,6 +113,25 @@ export function Toolbar() {
 
   function toggleSub(subId: string) {
     setOpenSubId((cur) => (cur === subId ? null : subId));
+    setPickingMaterial(null);
+  }
+
+  /** Ett klikk på en underkategori armerer verktøyet direkte, med sist brukte
+   *  valg for nettopp den underkategorien – ellers sist brukte type generelt,
+   *  ellers katalogens standard. Flyouten er finjustering, ikke en tvungen sti. */
+  function activateSub(sub: SubCategoryDef) {
+    const cfg =
+      lineConfig[sub.id] ??
+      recentLineTypes.find((r) => r.subId === sub.id) ??
+      (() => {
+        const material = sub.materials[0];
+        // Send ekte customDimensions – en bruker som kun har egendefinerte mål
+        // ville ellers fått en dimensjon som ikke finnes i lista.
+        const dims = dimensionsForMaterial(sub, material, customDimensions);
+        return { material, dimension: dims[0] ?? sub.dimensions[0] };
+      })();
+    setLineSelection(sub.id, cfg.material, cfg.dimension);
+    setOpenSubId(null);
     setPickingMaterial(null);
   }
 
@@ -143,7 +169,7 @@ export function Toolbar() {
     <aside className="toolbar">
       <div className="tool-section">
         <span className="tool-heading">Navigasjon</span>
-        <ToolButton mode="select" label="Velg" icon={MousePointer2} />
+        <ToolButton mode="select" label="Velg" icon={MousePointer2} title="Velg (V)" />
         <ToolButton mode="pan" label="Panorer" icon={Hand} />
       </div>
 
@@ -153,24 +179,54 @@ export function Toolbar() {
           mode="move"
           label="Flytt"
           icon={Move}
-          title="Velg objekter, klikk et basispunkt, klikk der de skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
+          title="Flytt (F) – velg objekter, klikk et basispunkt, klikk der de skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
         />
         <ToolButton
           mode="copy"
           label="Kopier"
           icon={Copy}
-          title="Velg objekter, klikk et basispunkt, klikk der kopien skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
+          title="Kopier (C) – velg objekter, klikk et basispunkt, klikk der kopien skal havne. Shift låser vinkel, skriv et tall = eksakt avstand i mm."
         />
         <ToolButton
           mode="split"
           label="Del"
           icon={Scissors}
-          title="Klikk på et tegnet rør/kanal for å dele det i to der du klikker."
+          title="Del (D) – klikk på et tegnet rør/kanal for å dele det i to der du klikker."
         />
       </div>
 
+      {recentLineTypes.length > 0 && (
+        <div className="tool-section recent-types">
+          <span className="tool-heading">Sist brukt</span>
+          <div className="recent-chips">
+            {recentLineTypes.map((r) => {
+              const sub = SUBCATEGORIES[r.subId];
+              if (!sub) return null; // underkategorien kan være fjernet siden sist
+              const active =
+                tool === `line:${r.subId}` &&
+                lineConfig[r.subId]?.material === r.material &&
+                lineConfig[r.subId]?.dimension === r.dimension;
+              return (
+                <button
+                  key={`${r.subId}|${r.material}|${r.dimension}`}
+                  className={`recent-chip ${active ? 'active' : ''}`}
+                  onClick={() => setLineSelection(r.subId, r.material, r.dimension)}
+                  disabled={disabled}
+                  title={`${sub.label} · ${r.material} · ${r.dimension}`}
+                >
+                  <span className="recent-dot" style={{ background: colorFor(sub, customColors) }} />
+                  {sub.label} <em>{r.dimension}</em>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="tool-section">
-        <span className="tool-heading">Rør &amp; kanaler</span>
+        <span className="tool-heading" title="Hurtigtast R (rør) / K (kanal) armerer sist brukte type">
+          Rør &amp; kanaler
+        </span>
         {CATEGORIES.map((cat) => {
           const isOpen = !collapsedCats[cat.code];
           const isHidden = hiddenCategories.has(cat.code);
@@ -209,6 +265,7 @@ export function Toolbar() {
                       disabled={disabled}
                       isActiveTool={tool === `line:${sub.id}`}
                       config={lineConfig[sub.id]}
+                      onActivate={() => activateSub(sub)}
                       isOpen={openSubId === sub.id}
                       pickingMaterial={openSubId === sub.id ? pickingMaterial : null}
                       onToggle={() => toggleSub(sub.id)}
@@ -271,7 +328,7 @@ export function Toolbar() {
         </button>
         <div className={`collapse ${toolsOpen ? 'open' : ''}`}>
           <ToolButton mode="tag" label="Tag" icon={TagIcon} />
-          <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} />
+          <ToolButton mode="measure:distance" label="Avstand" icon={ArrowRightLeft} title="Avstand (A)" />
           <ToolButton mode="measure:area" label="Areal" icon={LandPlot} />
           <ToolButton mode="annotation:line" label="Linje" icon={Minus} />
           <ToolButton mode="annotation:arrow" label="Pil" icon={MoveUpRight} />
@@ -315,6 +372,8 @@ interface SubPickerProps {
   disabled: boolean;
   isActiveTool: boolean;
   config: { material: string; dimension: string } | undefined;
+  /** Ett klikk på selve raden – armerer verktøyet direkte. */
+  onActivate: () => void;
   isOpen: boolean;
   pickingMaterial: string | null;
   onToggle: () => void;
@@ -333,6 +392,7 @@ function SubPicker({
   disabled,
   isActiveTool,
   config,
+  onActivate,
   isOpen,
   pickingMaterial,
   onToggle,
@@ -354,42 +414,52 @@ function SubPicker({
 
   return (
     <div className="sub-picker">
-      <button
-        className={`tool sub-trigger ${isActiveTool ? 'active' : ''}`}
-        onClick={onToggle}
-        disabled={disabled}
-        title={sub.label}
-      >
-        <label
-          className="tool-swatch-picker"
-          onClick={(e) => e.stopPropagation()}
-          title="Endre farge for denne underkategorien"
+      <div className={`sub-trigger-row ${isActiveTool ? 'active' : ''}`}>
+        <button
+          className={`tool sub-trigger ${isActiveTool ? 'active' : ''}`}
+          onClick={onActivate}
+          disabled={disabled}
+          title={`${sub.label} – klikk for å tegne med sist brukte verdier`}
         >
-          <span
-            className="tool-swatch"
-            style={{
-              background: dashed ? 'transparent' : color,
-              borderColor: color,
-              borderStyle: dashed ? 'dashed' : 'solid',
-            }}
-          />
-          <input
-            type="color"
-            className="tool-swatch-input"
-            value={color}
-            onChange={(e) => onSetColor(e.target.value)}
-          />
-        </label>
-        <span className="tool-label-stack">
-          <span className="tool-label">{sub.label}</span>
-          {isActiveTool && config && (
-            <span className="tool-config">{config.material} · {config.dimension}</span>
-          )}
-        </span>
-        <span className={`sub-caret ${isOpen ? 'open' : ''}`}>
+          <label
+            className="tool-swatch-picker"
+            onClick={(e) => e.stopPropagation()}
+            title="Endre farge for denne underkategorien"
+          >
+            <span
+              className="tool-swatch"
+              style={{
+                background: dashed ? 'transparent' : color,
+                borderColor: color,
+                borderStyle: dashed ? 'dashed' : 'solid',
+              }}
+            />
+            <input
+              type="color"
+              className="tool-swatch-input"
+              value={color}
+              onChange={(e) => onSetColor(e.target.value)}
+            />
+          </label>
+          <span className="tool-label-stack">
+            <span className="tool-label">{sub.label}</span>
+            {/* Vises for ALLE underkategorier, ikke bare den aktive – det er
+                dette som gjør ett-klikks-aktivering trygt: man ser hva man
+                får før man klikker. */}
+            {config && (
+              <span className="tool-config">{config.material} · {config.dimension}</span>
+            )}
+          </span>
+        </button>
+        <button
+          className={`sub-caret-btn ${isOpen ? 'open' : ''}`}
+          onClick={onToggle}
+          disabled={disabled}
+          title="Velg materiale og dimensjon manuelt"
+        >
           <ChevronDown size={13} />
-        </span>
-      </button>
+        </button>
+      </div>
 
       <div className={`collapse ${isOpen ? 'open' : ''}`}>
         <div className="sub-flyout">

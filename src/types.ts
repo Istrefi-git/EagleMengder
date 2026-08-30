@@ -136,6 +136,14 @@ export interface SubCategoryDef {
   dimensions: string[];
 }
 
+/** En rør-/kanaltype brukeren nylig har tegnet med. Brukes til «Sist brukt»-raden
+ *  i verktøylinja og til R/K-hurtigtastene, som sykler gjennom lista. */
+export interface RecentLineType {
+  subId: string;
+  material: string;
+  dimension: string;
+}
+
 export interface CategoryDef {
   /** Bygningsdelskode, f.eks. "31" */
   code: string;

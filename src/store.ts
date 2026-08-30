@@ -11,6 +11,7 @@ import type {
   MeasurementEntity,
   MeasurementType,
   PipeRenderStyle,
+  RecentLineType,
   ScaleState,
   SymbolEntity,
   SymbolType,
@@ -574,6 +575,9 @@ const MAX_HISTORY = 50;
 
 const SETTINGS_KEY = 'mengdemaler-settings';
 
+/** Hvor mange typer «Sist brukt»-raden husker. */
+export const MAX_RECENT_LINE_TYPES = 6;
+
 interface PersistedSettings {
   pipe: number;
   duct: number;
@@ -605,6 +609,12 @@ interface PersistedSettings {
   quantityGroupBy: GroupBy;
   quantitySortBy: SortBy;
   quantitySortDir: SortDir;
+  /** Globale standardvalg av materiale/dimensjon per underkategori. Dette er et
+   *  STANDARDLAG – et tilbuds eget snapshot legger seg oppå (se importSnapshot),
+   *  slik at et nytt tilbud arver dine vaner mens et lagret tilbud beholder sine. */
+  lineConfig: Record<string, { material: string; dimension: string }>;
+  /** Sist brukte rør-/kanaltyper, nyeste først. */
+  recentLineTypes: RecentLineType[];
 }
 
 function loadSettings(): PersistedSettings {
@@ -637,6 +647,33 @@ function loadSettings(): PersistedSettings {
               ),
             )
           : {},
+      lineConfig:
+        parsed.lineConfig && typeof parsed.lineConfig === 'object'
+          ? Object.fromEntries(
+              Object.entries(parsed.lineConfig as Record<string, unknown>).filter(
+                (entry): entry is [string, { material: string; dimension: string }] => {
+                  // Avvis underkategorier som ikke finnes lenger – ellers mates et
+                  // ugyldig materiale inn i getBendAngles/dimensionsForMaterial.
+                  if (!Object.prototype.hasOwnProperty.call(SUBCATEGORIES, entry[0])) return false;
+                  const v = entry[1] as { material?: unknown; dimension?: unknown } | null;
+                  return !!v && typeof v.material === 'string' && typeof v.dimension === 'string';
+                },
+              ),
+            )
+          : {},
+      recentLineTypes: Array.isArray(parsed.recentLineTypes)
+        ? (parsed.recentLineTypes as unknown[])
+            .filter(
+              (r): r is RecentLineType =>
+                !!r &&
+                typeof r === 'object' &&
+                typeof (r as RecentLineType).subId === 'string' &&
+                Object.prototype.hasOwnProperty.call(SUBCATEGORIES, (r as RecentLineType).subId) &&
+                typeof (r as RecentLineType).material === 'string' &&
+                typeof (r as RecentLineType).dimension === 'string',
+            )
+            .slice(0, MAX_RECENT_LINE_TYPES)
+        : [],
       customColors:
         parsed.customColors && typeof parsed.customColors === 'object'
           ? Object.fromEntries(
@@ -704,6 +741,8 @@ function defaultSettings(): PersistedSettings {
     quantityGroupBy: 'system',
     quantitySortBy: 'name',
     quantitySortDir: 'asc',
+    lineConfig: {},
+    recentLineTypes: [],
   };
 }
 
@@ -737,6 +776,8 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     quantityGroupBy: s.quantityGroupBy,
     quantitySortBy: s.quantitySortBy,
     quantitySortDir: s.quantitySortDir,
+    lineConfig: s.lineConfig,
+    recentLineTypes: s.recentLineTypes,
     ...overrides,
   });
 }
@@ -784,6 +825,8 @@ interface AppState {
   selectedKind: SelectedKind;
   /** Sist valgt materiale/dimensjon per underkategori, satt via verktøylinjens nedtrekksmeny */
   lineConfig: Record<string, { material: string; dimension: string }>;
+  /** Sist brukte rør-/kanaltyper, nyeste først – deles av «Sist brukt»-raden og R/K-tastene. */
+  recentLineTypes: RecentLineType[];
   /** Sist brukte feltverdier (dimensjon, lengde, luftmengde osv.) per utstyrstype, satt via
    * utstyr-HUD-en før plassering – gjør at man slipper å skrive inn dimensjon på nytt for
    * hvert spjeld/ventil/lyddemper man plasserer av samme type. */
@@ -1125,6 +1168,13 @@ export interface TilbudSnapshot {
 }
 
 const initialScale: ScaleState = { metersPerPixel: null, label: 'Ikke satt', source: 'none' };
+/** Legger en type fremst i «sist brukt», deduperer på hele trippelen og kapper lista. */
+function pushRecentLineType(list: RecentLineType[], next: RecentLineType): RecentLineType[] {
+  const same = (r: RecentLineType) =>
+    r.subId === next.subId && r.material === next.material && r.dimension === next.dimension;
+  return [next, ...list.filter((r) => !same(r))].slice(0, MAX_RECENT_LINE_TYPES);
+}
+
 const initialSettings = loadSettings();
 
 export const useStore = create<AppState>((set, get) => {
@@ -1177,7 +1227,8 @@ export const useStore = create<AppState>((set, get) => {
   tool: 'select',
   selectedId: null,
   selectedKind: null,
-  lineConfig: {},
+  lineConfig: initialSettings.lineConfig,
+  recentLineTypes: initialSettings.recentLineTypes,
   symbolConfig: {},
   hoveredSymbolId: null,
   multiSelection: new Set<string>(),
@@ -1307,18 +1358,29 @@ export const useStore = create<AppState>((set, get) => {
   clearSelection: () => set({ selectedId: null, selectedKind: null }),
 
   setLineSelection: (subId, material, dimension) =>
-    set((s) => ({
-      lineConfig: { ...s.lineConfig, [subId]: { material, dimension } },
-      tool: `line:${subId}`,
-      selectedId: null,
-      selectedKind: null,
-    })),
+    set((s) => {
+      const lineConfig = { ...s.lineConfig, [subId]: { material, dimension } };
+      const recentLineTypes = pushRecentLineType(s.recentLineTypes, { subId, material, dimension });
+      // Lagres globalt slik at valget følger med til NESTE tilbud. Et lagret
+      // tilbuds eget snapshot legger seg fortsatt oppå ved åpning.
+      persistSettings(s, { lineConfig, recentLineTypes });
+      return {
+        lineConfig,
+        recentLineTypes,
+        tool: `line:${subId}`,
+        selectedId: null,
+        selectedKind: null,
+      };
+    }),
 
   updateLineConfigDimension: (subId, dimension) =>
     set((s) => {
       const sub = SUBCATEGORIES[subId];
       const material = s.lineConfig[subId]?.material ?? sub.materials[0];
-      return { lineConfig: { ...s.lineConfig, [subId]: { material, dimension } } };
+      const lineConfig = { ...s.lineConfig, [subId]: { material, dimension } };
+      const recentLineTypes = pushRecentLineType(s.recentLineTypes, { subId, material, dimension });
+      persistSettings(s, { lineConfig, recentLineTypes });
+      return { lineConfig, recentLineTypes };
     }),
 
   addLine: (subId, points, material, dimension, systemId) => {
@@ -2281,7 +2343,9 @@ export const useStore = create<AppState>((set, get) => {
         measurements: [],
         scale: initialScale,
         autoDetected: null,
-        lineConfig: {},
+        // Nytt/tomt tilbud arver de globale standardvalgene i stedet for å
+        // starte blankt – ellers må brukeren gjennom typevalget på nytt hver gang.
+        lineConfig: loadSettings().lineConfig,
         symbolConfig: {},
         fileName: null,
         numPages: 0,
@@ -2302,7 +2366,9 @@ export const useStore = create<AppState>((set, get) => {
       clamps: snapshot.clamps ?? [],
       measurements: snapshot.measurements ?? [],
       scale: snapshot.scale,
-      lineConfig: snapshot.lineConfig,
+      // Globale standarder som bunn, tilbudets egne valg oppå – tegningens
+      // egne valg er mer spesifikke enn dine generelle vaner.
+      lineConfig: { ...loadSettings().lineConfig, ...(snapshot.lineConfig ?? {}) },
       symbolConfig: snapshot.symbolConfig ?? {},
       fileName: snapshot.fileName,
       numPages: snapshot.numPages,
@@ -2338,7 +2404,7 @@ export const useStore = create<AppState>((set, get) => {
       tool: 'select',
       selectedId: null,
       selectedKind: null,
-      lineConfig: {},
+      lineConfig: loadSettings().lineConfig,
       symbolConfig: {},
       hoveredSymbolId: null,
       multiSelection: new Set<string>(),

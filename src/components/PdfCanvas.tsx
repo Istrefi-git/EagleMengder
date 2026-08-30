@@ -7,6 +7,7 @@ import { applyMovePlan, clampScale, planMove } from '../store';
 import type { MovePlan } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
+  CATEGORIES,
   POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
   TEXT_ANNOTATION_TYPES,
@@ -61,6 +62,26 @@ import { PipeTube } from './PipeTube';
 import { SymbolTooltip } from './SymbolTooltip';
 import { BranchChoicePopover } from './BranchChoicePopover';
 import { registerStage } from '../lib/stageCapture';
+
+/** Sant hvis tastetrykket skjer mens brukeren skriver et sted (input/textarea/select/
+ * contentEditable) – bokstavsnarveiene (R/K/V/F/C/D/A) skal ALDRI trigge da. Sjekker
+ * både `e.target` og `document.activeElement`, siden noen av appens flytende felt
+ * (f.eks. lengde-/avstandsinntastingen) kaller `stopPropagation()` selv, men andre
+ * dialoger (Innstillinger, symbolbiblioteket) ikke nødvendigvis ligger i samme
+ * event-tre som der tastetrykket faktisk registreres. */
+function isTypingContext(e: KeyboardEvent): boolean {
+  // `e.target`/`document.activeElement` kan i prinsippet være noe som ikke er et
+  // Element (f.eks. selve document eller window) – sjekk det eksplisitt før
+  // DOM-metoder som getAttribute kalles, ellers kaster denne i stedet for å svare nei.
+  const isTypingEl = (el: unknown): boolean => {
+    if (!(el instanceof Element)) return false;
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if ((el as HTMLElement).isContentEditable) return true;
+    return el.getAttribute('role') === 'textbox';
+  };
+  return isTypingEl(e.target) || isTypingEl(document.activeElement);
+}
 
 /** Nærmeste linje av gitt kind innenfor toleranse, blant en FERDIG FILTRERT
  * kandidatliste. Selve løkka bak `findBranchTarget` (under, i komponenten), trukket
@@ -126,6 +147,7 @@ export function PdfCanvas() {
   const duplicateSelection = useStore((s) => s.duplicateSelection);
   const nudgeTag = useStore((s) => s.nudgeTag);
   const lineConfig = useStore((s) => s.lineConfig);
+  const recentLineTypes = useStore((s) => s.recentLineTypes);
   const hoveredSymbolId = useStore((s) => s.hoveredSymbolId);
   const pipeRenderStyle = useStore((s) => s.pipeRenderStyle);
 
@@ -165,6 +187,7 @@ export function PdfCanvas() {
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
   const setCalibrationDistance = useStore((s) => s.setCalibrationDistance);
+  const openScaleDialog = useStore((s) => s.openScaleDialog);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const beginHistoryBatch = useStore((s) => s.beginHistoryBatch);
@@ -243,10 +266,28 @@ export function PdfCanvas() {
   const [distanceEntry, setDistanceEntry] = useState<{ value: string; screenX: number; screenY: number } | null>(
     null,
   );
+  // Numerisk lengde/vinkel-inntasting mens man tegner rør/kanal (Revit/AutoCAD-stil):
+  // første siffertast etter minst ett plassert punkt åpner dette feltet. `field` er
+  // hvilket av de to tallfeltene som har fokus akkurat nå (Tab bytter). Holdt ATSKILT
+  // fra distanceEntry – Flytt/Kopier og tegning skal ikke dele tilstand her, siden
+  // committen deres er fundamentalt ulik (den ene avslutter en gest, den andre
+  // legger til et punkt og fortsetter tegningen).
+  const [lineEntry, setLineEntry] = useState<{
+    length: string;
+    angle: string;
+    field: 'length' | 'angle';
+    screenX: number;
+    screenY: number;
+  } | null>(null);
+  const lineEntryLengthRef = useRef<HTMLInputElement>(null);
+  const lineEntryAngleRef = useRef<HTMLInputElement>(null);
   // Midlertidig panorering ved å holde inne Mellomrom (og dra med venstre knapp),
   // uavhengig av aktivt verktøy – mister ikke pågående tegning/måling.
   const [isSpacePan, setIsSpacePan] = useState(false);
   const spacePanRef = useRef(false);
+  // Holdes kun for å vise vinkellås-brikken i draw-huden som «løst» mens Shift er nede
+  // – selve snap-logikken leser e.evt.shiftKey direkte og er uavhengig av denne.
+  const [shiftHeld, setShiftHeld] = useState(false);
   // Manuell panorering med midtre museknapp (musehjul-klikk + dra).
   const middlePanRef = useRef<{ startX: number; startY: number; viewX: number; viewY: number } | null>(null);
   const viewRef = useRef(view);
@@ -274,6 +315,33 @@ export function PdfCanvas() {
     transformPlanRef.current = null;
     setDistanceEntry(null);
   }, []);
+
+  /** R/K-hurtigtasten: armerer sist brukte rør-/kanaltype av rett art. Er verktøyet
+   * allerede en type av den arten, sykles det til NESTE i «sist brukt» (Revits
+   * PI-analog: gjentatt trykk bytter mellom nylig brukte typer). Finnes ingen
+   * «sist brukt» av arten ennå, faller den tilbake på første underkategori av
+   * riktig art med katalogens standardverdier. Definert tidlig, som resetTransform
+   * over, slik at onKey-effekten kan referere den. */
+  const armRecentLineKind = useCallback(
+    (kind: 'pipe' | 'duct') => {
+      const ofKind = recentLineTypes.filter((r) => categoryOf(r.subId)?.kind === kind);
+      if (ofKind.length > 0) {
+        const curIdx = ofKind.findIndex(
+          (r) => tool === `line:${r.subId}` && lineConfig[r.subId]?.material === r.material,
+        );
+        const next = ofKind[(curIdx + 1) % ofKind.length];
+        setLineSelection(next.subId, next.material, next.dimension);
+        return;
+      }
+      const cat = CATEGORIES.find((c) => c.kind === kind);
+      const sub = cat?.subs[0];
+      if (!sub) return;
+      const material = sub.materials[0];
+      const dims = dimensionsForMaterial(sub, material, customDimensions);
+      setLineSelection(sub.id, material, dims[0] ?? sub.dimensions[0]);
+    },
+    [recentLineTypes, tool, lineConfig, setLineSelection, customDimensions],
+  );
 
   // Registrerer Stage-instansen i stageCapture-modulen, slik at TopBar/PrintableReport
   // kan fange hele tegningen som bilde til PDF-eksport uten å måtte sende Stage-refen
@@ -341,8 +409,7 @@ export function PdfCanvas() {
   // ── Tastatur ─────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (isTypingContext(e)) return;
       if (e.key === 'Escape') {
         // Midt i en flytte-/kopier-gest (basispunkt satt): avbryt KUN gesten og behold
         // utvalget/verktøyet, slik at man kan prøve et nytt basispunkt med det samme.
@@ -353,6 +420,7 @@ export function PdfCanvas() {
         // Avbryt all pågående tegning/markup.
         setDraftPoints([]);
         setContinuationAnchor(null);
+        setLineEntry(null);
         setCalibPoints([]);
         setMeasureDraftPoints([]);
         setPolygonDraftPoints([]);
@@ -407,9 +475,63 @@ export function PdfCanvas() {
           screenX: cursor.x * view.scale + view.x,
           screenY: cursor.y * view.scale + view.y,
         });
+      } else if (
+        isLineTool &&
+        draftPoints.length >= 2 &&
+        !lineEntry &&
+        /^[0-9]$/.test(e.key) &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        // Samme Revit/AutoCAD-idiom som Flytt/Kopier over: første siffer etter minst
+        // ett plassert punkt åpner et lengde-/vinkelfelt i stedet for å legge til et
+        // knekkpunkt på museposisjonen.
+        if (!scale.metersPerPixel) {
+          setError('Sett målestokk for å skrive inn en eksakt lengde');
+          return;
+        }
+        e.preventDefault();
+        const n = draftPoints.length;
+        const anchor = cursor ?? { x: draftPoints[n - 2], y: draftPoints[n - 1] };
+        setLineEntry({
+          length: e.key,
+          angle: '',
+          field: 'length',
+          screenX: anchor.x * view.scale + view.x,
+          screenY: anchor.y * view.scale + view.y,
+        });
+      } else if (isLineTool && draftPoints.length >= 2 && e.key === 'Backspace') {
+        // Fjerner siste plasserte knekkpunkt i strekningen som pågår – MÅ sjekkes før
+        // den generelle Delete/Backspace-grenen under, ellers ville Backspace slettet
+        // FORRIGE ferdige strekning (addLineRun lar den stå markert) i stedet for å
+        // angre siste punkt i den man holder på med nå.
+        e.preventDefault();
+        setDraftPoints((prev) => prev.slice(0, -2));
+        if (draftPoints.length === 2) setContinuationAnchor(null);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (multiSelection.size > 0) deleteMany(Array.from(multiSelection));
         else deleteSelected();
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.repeat &&
+        ['v', 'f', 'c', 'd', 'a', 'r', 'k'].includes(e.key.toLowerCase())
+      ) {
+        // Ett-tasts hurtigtaster (norske mnemonikker): V velg, F flytt, C kopier,
+        // D del, A avstand, R rør, K kanal. R/K armerer sist brukte type av den
+        // arten – trykkes de igjen sykles det gjennom «sist brukt».
+        const k = e.key.toLowerCase();
+        if (k === 'v') { e.preventDefault(); setTool('select'); }
+        else if (k === 'f') { e.preventDefault(); setTool('move'); }
+        else if (k === 'c') { e.preventDefault(); setTool('copy'); }
+        else if (k === 'd') { e.preventDefault(); setTool('split'); }
+        else if (k === 'a') { e.preventDefault(); setTool('measure:distance'); }
+        else if (k === 'r' || k === 'k') {
+          e.preventDefault();
+          armRecentLineKind(k === 'r' ? 'pipe' : 'duct');
+        }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -491,6 +613,11 @@ export function PdfCanvas() {
     scale.metersPerPixel,
     cursor,
     view,
+    lineEntry,
+    setError,
+    setTool,
+    armRecentLineKind,
+    setContinuationAnchor,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -507,18 +634,25 @@ export function PdfCanvas() {
         spacePanRef.current = true;
         setIsSpacePan(true);
       }
+      if (e.key === 'Shift') setShiftHeld(true);
     };
     const onUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         spacePanRef.current = false;
         setIsSpacePan(false);
       }
+      if (e.key === 'Shift') setShiftHeld(false);
     };
+    // Mister man fokus (alt-tab, klikk utenfor vinduet) mens Shift holdes, kommer
+    // aldri keyup – uten dette ville brikken kunne bli hengende på «løst».
+    const onBlur = () => setShiftHeld(false);
+    window.addEventListener('blur', onBlur);
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     return () => {
       window.removeEventListener('keydown', onDown);
       window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
     };
   }, []);
 
@@ -561,6 +695,7 @@ export function PdfCanvas() {
     setTransformBase(null);
     transformPlanRef.current = null;
     setDistanceEntry(null);
+    setLineEntry(null);
     if (tool.startsWith('line:')) {
       const subId = tool.slice('line:'.length);
       setDraftDimension(lineConfig[subId]?.dimension ?? null);
@@ -774,6 +909,58 @@ export function PdfCanvas() {
     commitTransform((ddx / len) * px, (ddy / len) * px);
   }, [distanceEntry, transformBase, cursor, scale.metersPerPixel, commitTransform]);
 
+  /** Legger til NESTE knekkpunkt i strekningen som pågår, i en eksakt oppgitt lengde
+   * (mm) og evt. vinkel – i motsetning til commitNumericDistance avslutter dette IKKE
+   * noe, tegningen fortsetter fra det nye punktet.
+   *
+   * Retning: typet vinkel hvis fylt inn, ellers musepekerens NÅVÆRENDE retning – som
+   * allerede har vært gjennom computeLinePoint og dermed er vinkellåst med mindre
+   * Shift holdes. Skriver man f.eks. «2400» uten vinkel mens låsen er aktiv, blir
+   * resultatet dermed eksakt 2400 mm langs den låste føringen; Shift+Enter gir fri
+   * retning. Er vinkelfeltet fylt ut, OVERSTYRER det låsen (typet verdi vinner alltid).
+   *
+   * Vinkelen betyr BØY (turn) relativt til forrige retning når det finnes en forrige
+   * retning å måle mot (som snapNextPoint) – og ABSOLUTT retning på det aller første
+   * segmentet (som segmentAngleDeg), siden det da ikke finnes noe å bøye FRA. */
+  const commitLineEntry = useCallback(() => {
+    if (!lineEntry || !scale.metersPerPixel || draftPoints.length < 2) return;
+    const n = draftPoints.length;
+    const px0 = draftPoints[n - 2];
+    const py0 = draftPoints[n - 1];
+
+    const mm = parseFloat(lineEntry.length.replace(',', '.'));
+    const px = mmToPx(mm, scale.metersPerPixel);
+    if (!Number.isFinite(px) || px <= 0) {
+      setLineEntry(null);
+      return;
+    }
+
+    let prevAngle: number | null = null;
+    if (n >= 4) {
+      // Retningen på forrige segment: fra nest siste til siste plasserte punkt.
+      prevAngle = Math.atan2(py0 - draftPoints[n - 3], px0 - draftPoints[n - 4]);
+    } else if (continuationAnchor) {
+      prevAngle = Math.atan2(py0 - continuationAnchor.y, px0 - continuationAnchor.x);
+    }
+
+    const angleTyped = lineEntry.angle.trim() ? parseFloat(lineEntry.angle.replace(',', '.')) : null;
+    let dir: number;
+    if (angleTyped != null && Number.isFinite(angleTyped)) {
+      dir = prevAngle != null ? prevAngle + (angleTyped * Math.PI) / 180 : (angleTyped * Math.PI) / 180;
+    } else if (cursor) {
+      const dx = cursor.x - px0;
+      const dy = cursor.y - py0;
+      dir = Math.hypot(dx, dy) > 1e-6 ? Math.atan2(dy, dx) : (prevAngle ?? 0);
+    } else {
+      dir = prevAngle ?? 0;
+    }
+
+    const next = { x: px0 + px * Math.cos(dir), y: py0 + px * Math.sin(dir) };
+    setDraftPoints((prev) => [...prev, next.x, next.y]);
+    setCursor(next);
+    setLineEntry(null);
+  }, [lineEntry, scale.metersPerPixel, draftPoints, continuationAnchor, cursor]);
+
   /** Setter inn en avgreiningsdel (eller ber bruker velge type for kanal) ved et punkt
    * der en ny linje starter/ender på et eksisterende rør/kanal. */
   const tryInsertBranch = useCallback(
@@ -867,6 +1054,7 @@ export function PdfCanvas() {
     }
     setDraftPoints([]);
     setCursor(null);
+    setLineEntry(null);
   }, [
     isLineTool,
     activeSubId,
@@ -953,14 +1141,17 @@ export function PdfCanvas() {
     return p ? { x: p.x, y: p.y } : null;
   }, []);
 
-  /** Snapper et punkt til nærmeste tillatte bend-vinkel hvis Shift holdes inne (for
-   * påfølgende segmenter), eller til nærmeste 45°-multiplum i absolutt retning for det
-   * aller første segmentet i en ny polylinje (ingen forrige retning å måle turn mot) –
-   * med mindre man fortsetter et eksisterende rør/kanal (continuationAnchor), da måles
-   * vinkelen i stedet mot DET rørets retning, akkurat som et vanlig påfølgende segment. */
+  /** Snapper et punkt til nærmeste tillatte bend-vinkel – ELLER til nærmeste 45°-
+   * multiplum i absolutt retning for det aller første segmentet i en ny polylinje
+   * (ingen forrige retning å måle turn mot) – med mindre man fortsetter et eksisterende
+   * rør/kanal (continuationAnchor), da måles vinkelen i stedet mot DET rørets retning,
+   * akkurat som et vanlig påfølgende segment.
+   *
+   * Vinkellås er PÅ som standard (Revit-stil) – Shift tegner fritt. Dette er omvendt
+   * av den gamle oppførselen (Shift LÅSTE); se PLAN.md fase 4. */
   const computeLinePoint = useCallback(
     (raw: { x: number; y: number }, shiftKey: boolean): { x: number; y: number } => {
-      if (!shiftKey || !isLineTool) return raw;
+      if (shiftKey || !isLineTool) return raw;
       if (draftPoints.length === 2) {
         if (continuationAnchor) {
           return snapNextPoint(
@@ -998,6 +1189,10 @@ export function PdfCanvas() {
         };
         return;
       }
+      // Høyreklikk håndteres utelukkende av handleContextMenu. Uten denne vakten
+      // faller button 2 gjennom hit og legger til et knekkpunkt i tegningen
+      // SAMTIDIG som kontekstmenyen setter inn et klammer.
+      if (e.evt.button === 2) return;
       // Mens Mellomrom holdes inne panorerer venstre-dra hele lerretet (Konva drar
       // stagen fordi draggable er på) – ikke legg til punkter/velg noe da.
       if (spacePanRef.current) return;
@@ -1007,32 +1202,57 @@ export function PdfCanvas() {
       if (!p) return;
 
       if (isLineTool) {
-        let point = computeLinePoint(p, e.evt.shiftKey);
-        // Tegnestart på et eksisterende rør/kanal: endepunkt av SAMME underkategori OG
-        // samme form (rund/rektangulær) → fortsett (forleng) det røret direkte. Midt på
-        // linja, ulik form, eller endepunkt av en annen underkategori → sett inn en
-        // avgreiningsdel som før.
-        if (draftPoints.length === 0 && activeSubId) {
-          const kind = categoryOf(activeSubId)?.kind;
-          const target = kind ? findBranchTarget(point, kind) : null;
-          if (target) {
-            const branchDim = draftDimension ?? activeSub?.dimensions[0] ?? '';
-            const tol = Math.max(
-              mmToPx(dimensionDiameterMm(target.line.dimension), scale.metersPerPixel),
-              16 * invScale,
-            );
-            const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
-            const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
-            if (endpointHit && target.line.subId === activeSubId && !shapeMismatch) {
-              // Fortsett fra endepunktet. Har brukeren valgt et annet mål enn det
-              // eksisterende røret, settes en overgang inn i skjøten automatisk.
-              seedContinuation(target.line, endpointHit === 'start', draftDimension ?? undefined);
-              setShowShiftTip(false);
-              return;
-            }
-            point = insertBranchForTarget(target, branchDim);
+        // Objektsnap vinner alltid over vinkellåsen (presedens: objektsnap > innskrevet
+        // verdi > hjelpelinje > vinkellås > rått). Sjekkes derfor på det RÅ, ulåste
+        // punktet – ellers ville en angitt/låst retning kunne dytte klikket forbi en
+        // kanal man tydelig prøvde å treffe. Gjelder alle klikk i en strekning, ikke
+        // bare det første, slik at man også kan avslutte MIDT i en strekning oppå en
+        // annen kanal og få en avgreining der (se finishLine/tryInsertBranch for
+        // tilsvarende sjekk ved dobbeltklikk/Enter-avslutning).
+        const kind = activeSubId ? categoryOf(activeSubId)?.kind : undefined;
+        const target = activeSubId && kind ? findBranchTarget(p, kind) : null;
+
+        if (target) {
+          const branchDim = draftDimension ?? activeSub?.dimensions[0] ?? '';
+          const tol = Math.max(
+            mmToPx(dimensionDiameterMm(target.line.dimension), scale.metersPerPixel),
+            16 * invScale,
+          );
+          const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
+          const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
+          // «Fortsett røret»-tolkningen gir bare mening som det ALLER FØRSTE punktet i
+          // en ny strekning – man kan ikke «fortsette» et rør midt i en tegning man
+          // allerede er i gang med.
+          if (
+            draftPoints.length === 0 &&
+            endpointHit &&
+            target.line.subId === activeSubId &&
+            !shapeMismatch
+          ) {
+            // Har brukeren valgt et annet mål enn det eksisterende røret, settes en
+            // overgang inn i skjøten automatisk.
+            seedContinuation(target.line, endpointHit === 'start', draftDimension ?? undefined);
+            setShowShiftTip(false);
+            return;
           }
+          if (endpointHit) {
+            // Endepunkt-mot-endepunkt (men ikke en gyldig «fortsett»-match over) er en
+            // vanlig skjøt/bend, IKKE en avgreining – samme regel som
+            // connectLandedEndpoints bruker etter Flytt/Kopier. Snapp til punktet uten
+            // å sette inn noe.
+            setDraftPoints((prev) => [...prev, target.x, target.y]);
+            setShowShiftTip(false);
+            return;
+          }
+          // Midt-på-kroppen-treff: snapp direkte til treffpunktet og sett inn
+          // avgreiningsdel, uansett hvor i strekningen vi er.
+          const point = insertBranchForTarget(target, branchDim);
+          setDraftPoints((prev) => [...prev, point.x, point.y]);
+          setShowShiftTip(false);
+          return;
         }
+
+        const point = computeLinePoint(p, e.evt.shiftKey);
         setDraftPoints((prev) => [...prev, point.x, point.y]);
         setShowShiftTip(false);
         return;
@@ -1343,7 +1563,9 @@ export function PdfCanvas() {
 
       // Forhåndsvis hva et klikk nå ville gjort: fortsette et eksisterende rør/kanal,
       // sette inn en avgreining, eller montere utstyr – samme treff-logikk som ved klikk.
-      if (isLineTool && draftPoints.length === 0 && activeSubId) {
+      if (isLineTool && activeSubId) {
+        // Vises nå gjennom hele strekningen, ikke bare før første punkt – siden et
+        // klikk kan sette inn en avgreining midt i tegningen også (se mousedown over).
         const kind = categoryOf(activeSubId)?.kind;
         const target = kind ? findBranchTarget(p, kind) : null;
         if (target) {
@@ -1354,8 +1576,17 @@ export function PdfCanvas() {
           );
           const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
           const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
-          const isContinue = !!endpointHit && target.line.subId === activeSubId && !shapeMismatch;
-          setHoverSnap({ line: target.line, x: target.x, y: target.y, kind: isContinue ? 'continue' : 'branch' });
+          const isValidContinue =
+            draftPoints.length === 0 && !!endpointHit && target.line.subId === activeSubId && !shapeMismatch;
+          if (isValidContinue) {
+            setHoverSnap({ line: target.line, x: target.x, y: target.y, kind: 'continue' });
+          } else if (endpointHit) {
+            // Endepunkt-mot-endepunkt (men ugyldig fortsettelse) blir en vanlig
+            // skjøt/bend uten fitting satt inn – ingenting spesielt å varsle om.
+            setHoverSnap(null);
+          } else {
+            setHoverSnap({ line: target.line, x: target.x, y: target.y, kind: 'branch' });
+          }
         } else {
           setHoverSnap(null);
         }
@@ -1625,6 +1856,18 @@ export function PdfCanvas() {
   const handleContextMenu = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
       e.evt.preventDefault();
+      // Høyreklikk mens man tegner avslutter strekningen på stedet (Revit-stil) –
+      // klammer-innsetting under gjelder kun «Velg»-verktøyet.
+      if (isLineTool) {
+        if (draftPoints.length >= 4) finishLine();
+        else {
+          setDraftPoints([]);
+          setContinuationAnchor(null);
+          setCursor(null);
+        }
+        return;
+      }
+      if (tool !== 'select') return;
       const p = getImagePoint();
       if (!p) return;
       // Nærmeste rør ELLER kanal innenfor bredde-toleransen (ingen kind-filter).
@@ -1641,7 +1884,18 @@ export function PdfCanvas() {
       }
       if (best) addClamp(best.line.id, best.x, best.y, best.angleDeg, best.line.dimension);
     },
-    [getImagePoint, lines, currentPage, scale.metersPerPixel, invScale, addClamp],
+    [
+      isLineTool,
+      draftPoints,
+      finishLine,
+      tool,
+      getImagePoint,
+      lines,
+      currentPage,
+      scale.metersPerPixel,
+      invScale,
+      addClamp,
+    ],
   );
 
   // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
@@ -1821,6 +2075,25 @@ export function PdfCanvas() {
               ))}
             </select>
           )}
+          <span
+            className={`draw-hud-lock ${shiftHeld ? 'released' : ''}`}
+            title={
+              shiftHeld
+                ? 'Vinkellås er løst ut mens Shift holdes – tegner fritt'
+                : `Vinkellås er på – rett vinkel og ${activeBendAngles.map((a) => `${a}°`).join(', ')}. Hold Shift for å tegne fritt.`
+            }
+          >
+            {shiftHeld ? 'Fri vinkel' : `Låst · ${activeBendAngles.join('/')}°`}
+          </span>
+          {!scale.metersPerPixel && (
+            <button
+              className="draw-hud-scale-warn"
+              onClick={() => openScaleDialog('manual')}
+              title="Ingen målestokk satt – nødvendig for eksakt lengde og fysiske mål"
+            >
+              Sett målestokk
+            </button>
+          )}
         </div>
       )}
 
@@ -1996,8 +2269,9 @@ export function PdfCanvas() {
         <div className="shift-tip">
           <Lightbulb size={15} className="shift-tip-icon" />
           <span className="shift-tip-text">
-            Hold <strong>Shift</strong> inne for å snappe til rett linje/standardvinkler. {activeMaterial}{' '}
-            støtter: {activeBendAngles.map((a) => `${a}°`).join(', ')}.
+            <strong>Vinkellås er på</strong> – rette linjer og {activeMaterial}s standardvinkler
+            ({activeBendAngles.map((a) => `${a}°`).join(', ')}). Hold <strong>Shift</strong> for å tegne fritt.
+            Skriv et tall for eksakt lengde.
           </span>
           <button className="shift-tip-close" onClick={() => setShowShiftTip(false)}>
             <X size={14} />
@@ -2365,6 +2639,47 @@ export function PdfCanvas() {
           {draftBends.map((b, i) => (
             <BendBadge key={i} x={b.x} y={b.y} angleDeg={classifyBendAngle(b.angleDeg)} invScale={invScale} />
           ))}
+          {isLineTool && draftPoints.length >= 2 && cursor && !lineEntry && (() => {
+            const n = draftPoints.length;
+            const px0 = draftPoints[n - 2];
+            const py0 = draftPoints[n - 1];
+            const segPx = distance(px0, py0, cursor.x, cursor.y);
+            if (segPx < 4 * invScale) return null;
+            // Turn-vinkelen for segmentet man er i ferd med å legge til er alltid den
+            // SISTE i draftBends, siden draftPreview (som draftBends regnes fra)
+            // slutter nettopp i cursor-punktet.
+            const liveBend = draftBends.length > 0 ? draftBends[draftBends.length - 1] : null;
+            return (
+              <Group x={cursor.x} y={cursor.y} listening={false}>
+                <Rect
+                  x={12 * invScale}
+                  y={4 * invScale}
+                  width={94 * invScale}
+                  height={(liveBend ? 32 : 18) * invScale}
+                  fill="rgba(20,26,34,0.82)"
+                  cornerRadius={4 * invScale}
+                />
+                <Text
+                  x={16 * invScale}
+                  y={7 * invScale}
+                  text={formatLengthMm(segPx, scale.metersPerPixel)}
+                  fontSize={12 * invScale}
+                  fill="#fff"
+                  fontStyle="bold"
+                />
+                {liveBend && (
+                  <Text
+                    x={16 * invScale}
+                    y={21 * invScale}
+                    text={`${classifyBendAngle(liveBend.angleDeg)}°`}
+                    fontSize={11 * invScale}
+                    fill="#f5a623"
+                    fontStyle="bold"
+                  />
+                )}
+              </Group>
+            );
+          })()}
           {hoverSnap && (
             <>
               <Line
@@ -2518,6 +2833,65 @@ export function PdfCanvas() {
             }}
           />
           <span>mm</span>
+        </div>
+      )}
+
+      {lineEntry && (
+        <div className="move-distance-input line-entry" style={{ left: lineEntry.screenX, top: lineEntry.screenY }}>
+          <input
+            ref={lineEntryLengthRef}
+            autoFocus={lineEntry.field === 'length'}
+            className={lineEntry.field === 'length' ? 'focused' : undefined}
+            inputMode="decimal"
+            value={lineEntry.length}
+            onChange={(e) =>
+              setLineEntry((v) => (v ? { ...v, length: e.target.value.replace(/[^0-9.,]/g, '') } : v))
+            }
+            onKeyDown={(e) => {
+              // Stopp alt fra å boble til lerretets tastatur-håndtering – det er dette
+              // som samtidig gjør at bokstavsnarveiene (R/K/V/F/C/D/A) aldri kan trigge
+              // mens man skriver her.
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitLineEntry();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setLineEntry(null);
+              } else if (e.key === 'Tab') {
+                e.preventDefault();
+                setLineEntry((v) => (v ? { ...v, field: 'angle' } : v));
+                lineEntryAngleRef.current?.focus();
+              }
+            }}
+          />
+          <span>mm</span>
+          <input
+            ref={lineEntryAngleRef}
+            autoFocus={lineEntry.field === 'angle'}
+            className={lineEntry.field === 'angle' ? 'focused' : undefined}
+            inputMode="decimal"
+            placeholder={draftPoints.length >= 4 || continuationAnchor ? 'Bend' : 'Retning'}
+            value={lineEntry.angle}
+            onChange={(e) =>
+              setLineEntry((v) => (v ? { ...v, angle: e.target.value.replace(/[^0-9.,-]/g, '') } : v))
+            }
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitLineEntry();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setLineEntry(null);
+              } else if (e.key === 'Tab') {
+                e.preventDefault();
+                setLineEntry((v) => (v ? { ...v, field: 'length' } : v));
+                lineEntryLengthRef.current?.focus();
+              }
+            }}
+          />
+          <span>°</span>
         </div>
       )}
 
