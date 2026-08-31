@@ -31,7 +31,10 @@ function getHint(tool: string): string | null {
   if (tool === 'split') return 'Klikk på et rør/en kanal for å dele det i to der du klikker';
   if (tool === 'tag') return 'Klikk på et rør, en kanal eller en komponent for å merke det';
   if (tool === 'select')
-    return 'Klikk for å velge · Shift-klikk for flere · dra for gummibånd · høyreklikk på et rør setter inn klammer';
+    return (
+      'Klikk for å velge · Shift-klikk for flere · dra for gummibånd · høyreklikk på et rør ' +
+      'eller en kanal åpner en meny · merket rør med åpen ende: høyreklikk plusset for å fortsette'
+    );
   if (tool === 'measure:distance') return 'Klikk to punkter · snapper til endepunkter og utstyr';
   if (tool === 'measure:area') return 'Klikk punkt for punkt rundt rommet · Enter lukker figuren';
   if (tool.startsWith('annotation:')) return 'Klikk og dra – eller klikk, flytt, klikk – for å tegne';

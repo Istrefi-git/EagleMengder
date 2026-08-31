@@ -3,7 +3,7 @@ import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, 
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
-import { applyMovePlan, clampScale, planMove } from '../store';
+import { applyMovePlan, clampScale, openEndsOf, planMove } from '../store';
 import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
@@ -1951,6 +1951,14 @@ export function PdfCanvas() {
   // Dette er rent en visningsfilter for canvas – mengdelisten er uberørt.
   const isSubHidden = (subId: string) => hiddenCategories.has(categoryOf(subId)?.code ?? '');
   const visibleLines = lines.filter((l) => l.page === currentPage && !isSubHidden(l.subId));
+  // Pluss-håndtaket på åpne ender må traversere ALLE sidens linjer (ikke visibleLines)
+  // – ellers ville det å skjule en underkategori fått skjøtene til den til å se åpne ut.
+  const selectedOpenEnds = useMemo(() => {
+    if (selectedKind !== 'line' || !selectedId) return null;
+    const pageLines = lines.filter((l) => l.page === currentPage);
+    const pageBranches = branches.filter((b) => b.page === currentPage);
+    return openEndsOf(pageLines, selectedId, pageBranches);
+  }, [selectedKind, selectedId, lines, branches, currentPage]);
   // Kanalstrekninger (kun kanaler, ikke rør) gruppert til sammenhengende «runs» for
   // veggtegning – se buildDuctRunWalls. Rendres i ett stykke per strekning slik at
   // veggene blir sammenhengende (avrundet bend, innsnevret overgang), i stedet for at
@@ -2375,6 +2383,10 @@ export function PdfCanvas() {
                     x: point.x,
                     y: point.y,
                   })
+                }
+                openEnds={line.id === selectedId ? selectedOpenEnds : null}
+                onOpenEndMenu={(fromStart, x, y) =>
+                  setCanvasMenu({ target: { type: 'openEnd', lineId: line.id, fromStart, x, y }, x, y })
                 }
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
@@ -3000,6 +3012,10 @@ interface LineNodeProps {
   /** Høyreklikk på kroppen – gir punktet (bildekoordinater, projisert på selve
    * senterlinjen) og vinkelen der, til å plassere kontekstmenyen med. */
   onOpenMenu: (point: { x: number; y: number; angleDeg: number }) => void;
+  /** Hvilket av de to endepunktene (0=start, 1=slutt) som er ÅPENT – null når linja
+   * ikke er den merkede (plusset vises kun for den ene, aktivt merkede linja). */
+  openEnds: [boolean, boolean] | null;
+  onOpenEndMenu: (fromStart: boolean, x: number, y: number) => void;
   pipeRenderStyle: PipeRenderStyle;
   customColors: Record<string, string>;
   onVertexDragStart: () => void;
@@ -3019,6 +3035,8 @@ function LineNode({
   onMove,
   onExtend,
   onOpenMenu,
+  openEnds,
+  onOpenEndMenu,
   pipeRenderStyle,
   customColors,
   onVertexDragStart,
@@ -3169,6 +3187,68 @@ function LineNode({
                 onExtend(idx === 0);
               }}
             />
+          );
+        })}
+
+      {/* Pluss på åpne ender (kun den merkede linja, se openEndsOf i store.ts) – tegnet
+          forskjøvet utover langs segmentretningen slik at det aldri overlapper
+          knekkpunkt-håndtaket. Venstreklikk fortsetter tegningen direkte (samme vei som
+          dobbeltklikk på håndtaket over); høyreklikk gir kontekstmenyen med det
+          rør/kanal-tilpassede «Fortsett på …»-valget (CanvasContextMenu). */}
+      {selected &&
+        editable &&
+        openEnds &&
+        [0, 1].map((i) => {
+          if (!openEnds[i]) return null;
+          const n = line.points.length;
+          const idx = i === 0 ? 0 : n - 2;
+          const adjIdx = i === 0 ? 2 : n - 4;
+          const px = line.points[idx];
+          const py = line.points[idx + 1];
+          const ax = line.points[adjIdx];
+          const ay = line.points[adjIdx + 1];
+          let dx = px - ax;
+          let dy = py - ay;
+          const segLen = Math.hypot(dx, dy) || 1;
+          dx /= segLen;
+          dy /= segLen;
+          const offset = 18 * invScale;
+          const cx = px + dx * offset;
+          const cy = py + dy * offset;
+          const r = 8 * invScale;
+          const arm = r * 0.5;
+          return (
+            <Group key={`open-${idx}`}>
+              <Line
+                points={[px, py, cx, cy]}
+                stroke="#2d9cdb"
+                strokeWidth={1.5 * invScale}
+                dash={[4 * invScale, 3 * invScale]}
+                listening={false}
+              />
+              <Circle
+                x={cx}
+                y={cy}
+                radius={r}
+                fill="#2d9cdb"
+                stroke="#fff"
+                strokeWidth={1.5 * invScale}
+                onMouseDown={(e) => {
+                  // Kun venstreklikk fortsetter direkte – høyreklikk skal åpne menyen,
+                  // ikke begge deler.
+                  if (e.evt.button !== 0) return;
+                  e.cancelBubble = true;
+                  onExtend(i === 0);
+                }}
+                onContextMenu={(e) => {
+                  e.evt.preventDefault();
+                  e.cancelBubble = true;
+                  onOpenEndMenu(i === 0, px, py);
+                }}
+              />
+              <Line points={[cx - arm, cy, cx + arm, cy]} stroke="#fff" strokeWidth={1.6 * invScale} listening={false} />
+              <Line points={[cx, cy - arm, cx, cy + arm]} stroke="#fff" strokeWidth={1.6 * invScale} listening={false} />
+            </Group>
           );
         })}
 
