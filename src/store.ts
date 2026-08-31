@@ -676,6 +676,22 @@ export interface PendingBranchChoice {
   currentFittingType?: BranchFittingType;
 }
 
+/** Hva høyreklikk-menyen ble åpnet PÅ – enten kroppen til et rør/kanal (fire valg:
+ * ny avgrening/klammer/flytt/slett), eller pluss-håndtaket på en åpen ende (ett valg:
+ * fortsett). `x,y` er punktet menyen/handlingen skal virke på (i bildekoordinater). */
+export type CanvasMenuTarget =
+  | { type: 'lineBody'; lineId: string; x: number; y: number; angleDeg: number }
+  | { type: 'openEnd'; lineId: string; fromStart: boolean; x: number; y: number };
+
+export interface CanvasMenuState {
+  target: CanvasMenuTarget;
+  /** Skjermankeret menyen posisjoneres fra (samme punkt som target.x/y i praksis, men
+   * holdt separat slik at et framtidig menypunkt kan åpne på et annet punkt enn selve
+   * kommandoens mål). */
+  x: number;
+  y: number;
+}
+
 /** Tegnedata som angre/gjenta opererer på – verktøy/visning/tema er bevisst utelatt. */
 export interface DrawSnapshot {
   lines: LineEntity[];
@@ -1006,6 +1022,11 @@ interface AppState {
 
   // Ventende valg av avgreiningstype for kanaler (påstikk/T-kanal)
   pendingBranchChoice: PendingBranchChoice | null;
+  /** Høyreklikk-menyen på et rør/kanal eller på pluss-håndtaket på en åpen ende. Ren
+   * UI-tilstand – IKKE del av DrawSnapshot, ingen recordHistory, angre/gjenta bryr seg
+   * ikke om den. Modellert på pendingBranchChoice, men holder en callback-fri "target"
+   * (selve kommandoene kjøres i PdfCanvas, som har tegnesesjonens tilstand). */
+  canvasMenu: CanvasMenuState | null;
   /** Utstyr som er klikket inn et sted uten kanal/rør under – venter på bekreftelse */
   pendingOffLineSymbol: { type: SymbolType; x: number; y: number; systemId?: string } | null;
   /** Om bekreftelsesdialogen for utstyr-uten-kanal er slått av av brukeren */
@@ -1181,6 +1202,7 @@ interface AppState {
     patch: Partial<Pick<BranchEntity, 'fittingType' | 'dimension' | 'branchDimension' | 'angleDeg'>>,
   ) => void;
   setPendingBranchChoice: (choice: PendingBranchChoice | null) => void;
+  setCanvasMenu: (menu: CanvasMenuState | null) => void;
   resolvePendingBranchChoice: (fittingType: BranchFittingType) => void;
   addTag: (lineId: string, x: number, y: number) => void;
   updateTagLabel: (id: string, labelX: number, labelY: number) => void;
@@ -1389,6 +1411,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   pendingBranchChoice: null,
+  canvasMenu: null,
   pendingOffLineSymbol: null,
   suppressOffLineWarning: initialSettings.suppressOffLineWarning,
 
@@ -1993,6 +2016,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   setPendingBranchChoice: (choice) => set({ pendingBranchChoice: choice }),
+  setCanvasMenu: (menu) => set({ canvasMenu: menu }),
 
   resolvePendingBranchChoice: (fittingType) => {
     const choice = get().pendingBranchChoice;
@@ -2545,6 +2569,7 @@ export const useStore = create<AppState>((set, get) => {
       history: { past: [], future: [] },
       historyPaused: false,
       pendingBranchChoice: null,
+      canvasMenu: null,
       pendingOffLineSymbol: null,
       view: { scale: 1, x: 0, y: 0 },
       scaleDialogOpen: false,

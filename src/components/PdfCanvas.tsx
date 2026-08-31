@@ -4,7 +4,7 @@ import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
 import { applyMovePlan, clampScale, planMove } from '../store';
-import type { MovePlan } from '../store';
+import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
   CATEGORIES,
@@ -62,6 +62,8 @@ import { SymbolGlyph, BranchGlyph } from './symbols';
 import { PipeTube } from './PipeTube';
 import { SymbolTooltip } from './SymbolTooltip';
 import { BranchChoicePopover } from './BranchChoicePopover';
+import { CanvasContextMenu } from './CanvasContextMenu';
+import type { CanvasMenuCommand } from './CanvasContextMenu';
 import { registerStage } from '../lib/stageCapture';
 
 /** Sant hvis tastetrykket skjer mens brukeren skriver et sted (input/textarea/select/
@@ -151,6 +153,8 @@ export function PdfCanvas() {
   const setAreaMeasureMode = useStore((s) => s.setAreaMeasureMode);
   const hideComponentLabels = useStore((s) => s.hideComponentLabels);
   const setPendingBranchChoice = useStore((s) => s.setPendingBranchChoice);
+  const canvasMenu = useStore((s) => s.canvasMenu);
+  const setCanvasMenu = useStore((s) => s.setCanvasMenu);
   const updateLineConfigDimension = useStore((s) => s.updateLineConfigDimension);
   const setLineSelection = useStore((s) => s.setLineSelection);
   const select = useStore((s) => s.select);
@@ -384,6 +388,13 @@ export function PdfCanvas() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingContext(e)) return;
+      // Kontekstmenyen lukkes med sitt eget Escape-trykk – ellers ville samme Escape
+      // BÅDE lukket menyen OG f.eks. avbrutt en pågående tegning, som er to effekter
+      // av ett tastetrykk. Trykk Escape igjen for å gå videre til den vanlige oppførselen.
+      if (e.key === 'Escape' && canvasMenu) {
+        setCanvasMenu(null);
+        return;
+      }
       if (e.key === 'Escape') {
         // Midt i en flytte-/kopier-gest (basispunkt satt): avbryt KUN gesten og behold
         // utvalget/verktøyet, slik at man kan prøve et nytt basispunkt med det samme.
@@ -592,6 +603,8 @@ export function PdfCanvas() {
     setTool,
     armRecentLineKind,
     setContinuationAnchor,
+    canvasMenu,
+    setCanvasMenu,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -653,8 +666,24 @@ export function PdfCanvas() {
     };
   }, [setView]);
 
+  // Lukk kontekstmenyen ved klikk utenfor den. Fanges i CAPTURE-fase på selve
+  // containeren (ikke på Stage) – LineNode sin treff-linje setter `cancelBubble` i
+  // sin egen onMouseDown, så en lytter i boble-fasen på Stage-nivå ville aldri sett
+  // klikk på en ANNEN linje enn den menyen står på.
+  useEffect(() => {
+    if (!canvasMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if ((e.target as Element | null)?.closest('.canvas-menu')) return;
+      setCanvasMenu(null);
+    };
+    const el = containerRef.current;
+    el?.addEventListener('mousedown', onDown, true);
+    return () => el?.removeEventListener('mousedown', onDown, true);
+  }, [canvasMenu, setCanvasMenu]);
+
   // Avbryt pågående tegning når verktøy byttes, og forbered ny tegnesesjon
   useEffect(() => {
+    setCanvasMenu(null);
     setCalibPoints([]);
     setCursor(null);
     setHoverSnap(null);
@@ -1091,6 +1120,59 @@ export function PdfCanvas() {
       }
     },
     [setLineSelection, addTransition, updateLineConfigDimension],
+  );
+
+  /** Utfører et valg fra høyreklikk-menyen (kroppen) eller pluss-håndtaket (åpen ende).
+   * Leser linjen fra FERSK store-tilstand, ikke closurens `lines` – menyen kan ha stått
+   * åpen en stund, og linjen kan i mellomtiden ha blitt slettet eller endret. */
+  const handleCanvasMenuCommand = useCallback(
+    (target: CanvasMenuTarget, command: CanvasMenuCommand) => {
+      const line = useStore.getState().lines.find((l) => l.id === target.lineId);
+      if (!line) return;
+
+      if (target.type === 'openEnd') {
+        if (command === 'continue') seedContinuation(line, target.fromStart);
+        return;
+      }
+
+      // target.type === 'lineBody'
+      if (command === 'branch') {
+        const branchDim = lineConfig[line.subId]?.dimension ?? line.dimension;
+        // IKKE seedContinuation her – den setter continuationAnchor, som addLineRun
+        // mater inn i polylineBendAngles og som ville fabrikkert en falsk bend i
+        // påstikkpunktet. Dette gjenskaper i stedet nøyaktig det midt-på-kroppen-
+        // klikk allerede gjør i mousedown-håndteringen: sett draften direkte, uten anker.
+        insertBranchForTarget({ line, x: target.x, y: target.y, angleDeg: target.angleDeg }, branchDim);
+        setLineSelection(line.subId, line.material, branchDim);
+        preserveDraftRef.current = true;
+        setDraftPoints([target.x, target.y]);
+        setContinuationAnchor(null);
+        setShowShiftTip(true);
+      } else if (command === 'clamp') {
+        addClamp(line.id, target.x, target.y, target.angleDeg, line.dimension);
+      } else if (command === 'move') {
+        // Armerer det eksisterende Flytt-verktøyet i stedet for å starte et drag –
+        // museknappen er allerede sluppet når menyen åpnes. Med nøyaktig én linje
+        // merket gir planMove «single»-modus (nabo-strekking), som er riktig følelse.
+        clearMultiSelection();
+        select(line.id, 'line');
+        setTool('move');
+      } else if (command === 'delete') {
+        select(line.id, 'line');
+        deleteSelected();
+      }
+    },
+    [
+      lineConfig,
+      insertBranchForTarget,
+      setLineSelection,
+      addClamp,
+      clearMultiSelection,
+      select,
+      setTool,
+      deleteSelected,
+      seedContinuation,
+    ],
   );
 
   const getImagePoint = useCallback((): { x: number; y: number } | null => {
@@ -1806,8 +1888,7 @@ export function PdfCanvas() {
   const handleContextMenu = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
       e.evt.preventDefault();
-      // Høyreklikk mens man tegner avslutter strekningen på stedet (Revit-stil) –
-      // klammer-innsetting under gjelder kun «Velg»-verktøyet.
+      // Høyreklikk mens man tegner avslutter strekningen på stedet (Revit-stil).
       if (isLineTool) {
         if (draftPoints.length >= 4) finishLine();
         else {
@@ -1817,34 +1898,14 @@ export function PdfCanvas() {
         }
         return;
       }
-      if (tool !== 'select') return;
-      const p = getImagePoint();
-      if (!p) return;
-      // Nærmeste rør ELLER kanal innenfor bredde-toleransen (ingen kind-filter).
-      let best: { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null = null;
-      for (const line of lines) {
-        if (line.page !== currentPage) continue;
-        const cp = closestPointOnPolyline(line.points, p);
-        if (!cp) continue;
-        const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
-        if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
-          best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
-        }
-      }
-      if (best) addClamp(best.line.id, best.x, best.y, best.angleDeg, best.line.dimension);
+      // tool !== 'select': ingenting å gjøre her (andre verktøy har egne
+      // høyreklikk-regler, eller ingen). tool === 'select' på TOMT lerret: LineNode sin
+      // egen onContextMenu (kroppen) har allerede satt cancelBubble hvis klikket traff
+      // en linje – når vi når hit har brukeren altså truffet tomt rom, og
+      // kontekstmenyen (fire valg: avgrening/klammer/flytt/slett) åpnes derfor kun ved
+      // å treffe selve røret/kanalen, ikke «nær nok» som den gamle klammer-gesten gjorde.
     },
-    [
-      isLineTool,
-      draftPoints,
-      finishLine,
-      tool,
-      getImagePoint,
-      lines,
-      currentPage,
-      scale.metersPerPixel,
-      invScale,
-      addClamp,
-    ],
+    [isLineTool, draftPoints, finishLine],
   );
 
   // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
@@ -2308,6 +2369,13 @@ export function PdfCanvas() {
                 onChange={(pts) => updateLinePoints(line.id, pts)}
                 onMove={(dx, dy) => moveSingleLine(line.id, dx, dy, true)}
                 onExtend={(fromStart) => seedContinuation(line, fromStart)}
+                onOpenMenu={(point) =>
+                  setCanvasMenu({
+                    target: { type: 'lineBody', lineId: line.id, x: point.x, y: point.y, angleDeg: point.angleDeg },
+                    x: point.x,
+                    y: point.y,
+                  })
+                }
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
                 customColors={customColors}
@@ -2758,6 +2826,7 @@ export function PdfCanvas() {
         />
       )}
       <BranchChoicePopover view={view} />
+      <CanvasContextMenu view={view} onCommand={handleCanvasMenuCommand} />
 
       {distanceEntry && (
         <div className="move-distance-input" style={{ left: distanceEntry.screenX, top: distanceEntry.screenY }}>
@@ -2928,6 +2997,9 @@ interface LineNodeProps {
    * denne linjens egne punkter (brukt av knekkpunkt-håndtakene). */
   onMove: (dx: number, dy: number) => void;
   onExtend: (fromStart: boolean) => void;
+  /** Høyreklikk på kroppen – gir punktet (bildekoordinater, projisert på selve
+   * senterlinjen) og vinkelen der, til å plassere kontekstmenyen med. */
+  onOpenMenu: (point: { x: number; y: number; angleDeg: number }) => void;
   pipeRenderStyle: PipeRenderStyle;
   customColors: Record<string, string>;
   onVertexDragStart: () => void;
@@ -2946,6 +3018,7 @@ function LineNode({
   onChange,
   onMove,
   onExtend,
+  onOpenMenu,
   pipeRenderStyle,
   customColors,
   onVertexDragStart,
@@ -3015,6 +3088,9 @@ function LineNode({
         draggable={editable && selected}
         listening={editable}
         onMouseDown={(e) => {
+          // Kun venstreklikk her – ellers ville Shift+høyreklikk skrudd multi-merking
+          // av/på som en bieffekt. Høyreklikk merker eksplisitt i onContextMenu i stedet.
+          if (e.evt.button !== 0) return;
           e.cancelBubble = true;
           if (e.evt.shiftKey) onToggleMultiSelect();
           else onSelect();
@@ -3027,6 +3103,19 @@ function LineNode({
           node.position({ x: 0, y: 0 });
           // Flytt kun denne kanalen; naboer strekkes og komponenter følger med.
           onMove(dx, dy);
+        }}
+        onContextMenu={(e) => {
+          // preventDefault er PÅKREVD her – Stage-handleren (handleContextMenu) er
+          // ellers den eneste som kaller den, og cancelBubble stopper akkurat den fra
+          // å kjøre, så uten dette ville nettleserens EGEN kontekstmeny dukket opp.
+          e.evt.preventDefault();
+          e.cancelBubble = true;
+          const stage = e.target.getStage();
+          const p = stage?.getRelativePointerPosition();
+          if (!p) return;
+          const cp = closestPointOnPolyline(line.points, p);
+          onSelect(); // høyreklikk merker også, så plusset på åpne ender vises
+          onOpenMenu({ x: cp?.x ?? p.x, y: cp?.y ?? p.y, angleDeg: cp?.angleDeg ?? 0 });
         }}
       />
       {bends.map((b, i) => (

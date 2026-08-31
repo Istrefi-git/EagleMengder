@@ -1310,6 +1310,49 @@ body {
   color: #fff;
 }
 
+/* Høyreklikk-meny på rør/kanal-kroppen eller pluss-håndtaket på en åpen ende. Samme
+   skall som .branch-choice-popover, men ankret som en ekte kontekstmeny (nede-høyre
+   for klikkpunktet) i stedet for sentrert over det, og med høyere z-index siden den
+   kan åpnes samtidig som avgreiningspopoveren er lukket rett før. */
+.canvas-menu {
+  position: absolute;
+  transform: translate(2px, 6px);
+  min-width: 190px;
+  background: rgba(20, 26, 34, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 26;
+  animation: fade-in 0.15s ease;
+}
+.canvas-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #c4cdd8;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.canvas-menu-item:hover {
+  background: rgba(20, 192, 138, 0.16);
+  color: #fff;
+}
+.canvas-menu-item.danger:hover {
+  background: rgba(212, 85, 63, 0.2);
+  color: #ff9b8a;
+}
+
 /* Numerisk avstandsinntasting for Flytt/Kopier-verktøyet (Revit/AutoCAD-stil):
    åpnes ved første siffertast under en pågående gest, klonet fra branch-choice-popover. */
 .move-distance-input {
