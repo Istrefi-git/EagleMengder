@@ -57,6 +57,7 @@ import {
 import type { DuctRunWalls } from '../lib/geometry';
 import { formatAreaM2, formatLengthMm, mmToPx } from '../lib/scale';
 import { dimensionDiameterMm } from '../lib/dimension';
+import { endpointHitOf, findNearestLine, lineHitTolerance } from '../lib/hitTest';
 import { SymbolGlyph, BranchGlyph } from './symbols';
 import { PipeTube } from './PipeTube';
 import { SymbolTooltip } from './SymbolTooltip';
@@ -81,33 +82,6 @@ function isTypingContext(e: KeyboardEvent): boolean {
     return el.getAttribute('role') === 'textbox';
   };
   return isTypingEl(e.target) || isTypingEl(document.activeElement);
-}
-
-/** Nærmeste linje av gitt kind innenfor toleranse, blant en FERDIG FILTRERT
- * kandidatliste. Selve løkka bak `findBranchTarget` (under, i komponenten), trukket
- * ut som en ren modulfunksjon slik at auto-tilkobling etter Flytt/Kopier
- * (`connectLandedEndpoints`) kan sende inn en kandidatliste som EKSKLUDERER linjene
- * som nettopp ble flyttet/kopiert (ellers avgreiner en strekning på sin egen nabo),
- * og lese fra fersk store-tilstand i stedet for en potensielt utdatert React-closure. */
-function findBranchTargetIn(
-  candidates: LineEntity[],
-  point: { x: number; y: number },
-  kind: 'pipe' | 'duct',
-  mpp: number | null,
-  invScale: number,
-): { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null {
-  let best: { line: LineEntity; x: number; y: number; distance: number; angleDeg: number } | null = null;
-  for (const line of candidates) {
-    if (categoryOf(line.subId)?.kind !== kind) continue;
-    const cp = closestPointOnPolyline(line.points, point);
-    if (!cp) continue;
-    const dimMm = dimensionDiameterMm(line.dimension);
-    const tol = Math.max(mmToPx(dimMm, mpp), 16 * invScale);
-    if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
-      best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
-    }
-  }
-  return best;
 }
 
 export function PdfCanvas() {
@@ -728,12 +702,12 @@ export function PdfCanvas() {
    * at det automatisk settes inn en avgreiningsdel (T-rør/45°-grenrør/påstikk/T-kanal). */
   const findBranchTarget = useCallback(
     (point: { x: number; y: number }, kind: 'pipe' | 'duct') =>
-      findBranchTargetIn(
+      findNearestLine(
         lines.filter((l) => l.page === currentPage),
         point,
-        kind,
         scale.metersPerPixel,
         invScale,
+        kind,
       ),
     [lines, currentPage, scale.metersPerPixel, invScale],
   );
@@ -825,9 +799,9 @@ export function PdfCanvas() {
           { x: line.points[n - 2], y: line.points[n - 1] },
         ];
         for (const end of ends) {
-          const target = findBranchTargetIn(candidates, end, kind, mpp, invScale);
+          const target = findNearestLine(candidates, end, mpp, invScale, kind);
           if (!target) continue;
-          const tol = Math.max(mmToPx(dimensionDiameterMm(target.line.dimension), mpp), 16 * invScale);
+          const tol = lineHitTolerance(target.line.dimension, mpp, invScale);
           // Treff nøyaktig på målets endepunkt = en vanlig skjøt/fortsettelse (delte
           // punkter, samme som når to strekk møtes i et bend) – IKKE en avgreining.
           if (endpointHitOf(target.line, target.x, target.y, tol)) continue;
@@ -974,21 +948,6 @@ export function PdfCanvas() {
     },
     [activeSubId, findBranchTarget, insertBranchForTarget],
   );
-
-  /** Avstand (px) fra et punkt til et av endepunktene til en tegnet linje, brukt til å
-   * avgjøre om et treff på en eksisterende linje skjer nøyaktig på et endepunkt (→ fortsett
-   * samme rør) eller midt på linja (→ sett inn avgreiningsdel). */
-  function endpointHitOf(
-    line: LineEntity,
-    x: number,
-    y: number,
-    tol: number,
-  ): 'start' | 'end' | null {
-    const n = line.points.length;
-    if (distance(x, y, line.points[0], line.points[1]) <= tol) return 'start';
-    if (distance(x, y, line.points[n - 2], line.points[n - 1]) <= tol) return 'end';
-    return null;
-  }
 
   /** Snapper et målepunkt (avstand/areal-verktøy) til det mest relevante vektor-punktet i
    * nærheten – slik man er vant til fra PDF-redigeringsverktøy. Selve PDF-bakgrunnen er et
@@ -1214,10 +1173,7 @@ export function PdfCanvas() {
 
         if (target) {
           const branchDim = draftDimension ?? activeSub?.dimensions[0] ?? '';
-          const tol = Math.max(
-            mmToPx(dimensionDiameterMm(target.line.dimension), scale.metersPerPixel),
-            16 * invScale,
-          );
+          const tol = lineHitTolerance(target.line.dimension, scale.metersPerPixel, invScale);
           const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
           const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
           // «Fortsett røret»-tolkningen gir bare mening som det ALLER FØRSTE punktet i
@@ -1317,8 +1273,7 @@ export function PdfCanvas() {
           if (line.page !== currentPage) continue;
           const cp = closestPointOnPolyline(line.points, p);
           if (!cp) continue;
-          const dimMm = dimensionDiameterMm(line.dimension);
-          const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+          const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
           if (cp.distance <= tol && (!best || cp.distance < distance(p.x, p.y, best.x, best.y))) {
             best = { x: cp.x, y: cp.y, angleDeg: cp.angleDeg, lineId: line.id };
           }
@@ -1336,8 +1291,7 @@ export function PdfCanvas() {
           if (line.page !== currentPage) continue;
           const cp = closestPointOnPolyline(line.points, p);
           if (!cp) continue;
-          const dimMm = dimensionDiameterMm(line.dimension);
-          const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+          const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
           if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
             best = { x: cp.x, y: cp.y, distance: cp.distance, lineId: line.id };
           }
@@ -1374,7 +1328,7 @@ export function PdfCanvas() {
           if (line.page !== currentPage) continue;
           const cp = closestPointOnPolyline(line.points, p);
           if (!cp) continue;
-          const tol = Math.max(mmToPx(dimensionDiameterMm(line.dimension), scale.metersPerPixel), 16 * invScale);
+          const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
           if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
             best = { lineId: line.id, x: cp.x, y: cp.y, distance: cp.distance };
           }
@@ -1570,10 +1524,7 @@ export function PdfCanvas() {
         const target = kind ? findBranchTarget(p, kind) : null;
         if (target) {
           const branchDim = draftDimension ?? activeSub?.dimensions[0] ?? '';
-          const tol = Math.max(
-            mmToPx(dimensionDiameterMm(target.line.dimension), scale.metersPerPixel),
-            16 * invScale,
-          );
+          const tol = lineHitTolerance(target.line.dimension, scale.metersPerPixel, invScale);
           const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
           const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
           const isValidContinue =
@@ -1596,8 +1547,7 @@ export function PdfCanvas() {
           if (line.page !== currentPage) continue;
           const cp = closestPointOnPolyline(line.points, p);
           if (!cp) continue;
-          const dimMm = dimensionDiameterMm(line.dimension);
-          const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+          const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
           if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
             best = { line, x: cp.x, y: cp.y, distance: cp.distance };
           }
@@ -1609,7 +1559,7 @@ export function PdfCanvas() {
           if (line.page !== currentPage) continue;
           const cp = closestPointOnPolyline(line.points, p);
           if (!cp) continue;
-          const tol = Math.max(mmToPx(dimensionDiameterMm(line.dimension), scale.metersPerPixel), 16 * invScale);
+          const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
           if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
             best = { line, x: cp.x, y: cp.y, distance: cp.distance };
           }
@@ -1876,8 +1826,7 @@ export function PdfCanvas() {
         if (line.page !== currentPage) continue;
         const cp = closestPointOnPolyline(line.points, p);
         if (!cp) continue;
-        const dimMm = dimensionDiameterMm(line.dimension);
-        const tol = Math.max(mmToPx(dimMm, scale.metersPerPixel), 16 * invScale);
+        const tol = lineHitTolerance(line.dimension, scale.metersPerPixel, invScale);
         if (cp.distance <= tol && (!best || cp.distance < best.distance)) {
           best = { line, x: cp.x, y: cp.y, distance: cp.distance, angleDeg: cp.angleDeg };
         }

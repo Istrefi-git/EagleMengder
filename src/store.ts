@@ -41,18 +41,32 @@ import { mmToPx } from './lib/scale';
 let idCounter = 0;
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${idCounter++}`;
 
+/** Standard-toleranse for «er dette samme punkt» ved skjøter – ett eneste sted slik at
+ * findConnectedLineIds/syncTransitionsAtJoints/endpointDegree/openEndsOf aldri kan drive
+ * fra hverandre om noen justerer den. I BILDE-piksler, ikke skjermpiksler – IKKE endre
+ * denne uten å forstå at planMove/syncTransitionsAtJoints/findConnectedLineIds alle
+ * tolker eksisterende tegninger ut fra nåværende verdi. */
+export const JOINT_EPS = 0.5;
+
+/** Er (ax,ay) og (bx,by) «samme punkt» innenfor JOINT_EPS (eller en oppgitt toleranse)? */
+export function sharesPoint(ax: number, ay: number, bx: number, by: number, eps = JOINT_EPS): boolean {
+  return Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
+}
+
+function endpointsOf(l: LineEntity): { x: number; y: number }[] {
+  const n = l.points.length;
+  return [
+    { x: l.points[0], y: l.points[1] },
+    { x: l.points[n - 2], y: l.points[n - 1] },
+  ];
+}
+
 /** Finner alle linjer som er transitivt forbundet med et sett med start-id-er, via delte
  * endepunkter (samme koordinat innenfor toleranse) – brukes til å flytte en hel
  * sammenhengende rør-/kanalstrekning som én rigid enhet (se nudgeSelected), slik at
- * skjøtene ikke ryker når man flytter et enkelt segment med piltastene. */
-function findConnectedLineIds(pageLines: LineEntity[], seedIds: string[], eps = 0.5): Set<string> {
-  const endpointsOf = (l: LineEntity) => {
-    const n = l.points.length;
-    return [
-      { x: l.points[0], y: l.points[1] },
-      { x: l.points[n - 2], y: l.points[n - 1] },
-    ];
-  };
+ * skjøtene ikke ryker når man flytter et enkelt segment med piltastene. Eksportert slik
+ * at UI-et (dobbeltklikk-merk-strekning) kan gjenbruke akkurat samme topologi-regel. */
+export function findConnectedLineIds(pageLines: LineEntity[], seedIds: string[], eps = JOINT_EPS): Set<string> {
   const visited = new Set<string>();
   const queue = [...seedIds];
   while (queue.length > 0) {
@@ -65,14 +79,45 @@ function findConnectedLineIds(pageLines: LineEntity[], seedIds: string[], eps = 
     for (const other of pageLines) {
       if (visited.has(other.id)) continue;
       const otherPts = endpointsOf(other);
-      const shares = pts.some((p) => otherPts.some((op) => Math.abs(p.x - op.x) < eps && Math.abs(p.y - op.y) < eps));
+      const shares = pts.some((p) => otherPts.some((op) => sharesPoint(p.x, p.y, op.x, op.y, eps)));
       if (shares) queue.push(other.id);
     }
   }
   return visited;
 }
 
-const JOINT_EPS = 0.5;
+/** Antall linje-endepunkter (hver linje kan bidra 0, 1 eller 2) som ligger innenfor eps
+ * av (x,y). 0 = ingenting der, 1 = åpen ende, 2 = vanlig skjøt/bend, ≥3 = avgreiningsnode.
+ * Brukes til å avgjøre om en bend/overgang/avgreining er blitt foreldreløs. */
+export function endpointDegree(pageLines: LineEntity[], x: number, y: number, eps = JOINT_EPS): number {
+  let deg = 0;
+  for (const l of pageLines) {
+    for (const p of endpointsOf(l)) {
+      if (sharesPoint(p.x, p.y, x, y, eps)) deg++;
+    }
+  }
+  return deg;
+}
+
+/** For en gitt linje: er start-/sluttpunktet en ÅPEN ende (ingen annen linje deler det,
+ * OG ingen avgreiningsmarkør sitter der – et påstikk-punkt er avsluttet selv om graden
+ * er 1). Brukes av «pluss på åpen ende»-håndtaket. */
+export function openEndsOf(
+  pageLines: LineEntity[],
+  lineId: string,
+  branchesOnPage: BranchEntity[],
+  eps = JOINT_EPS,
+): [boolean, boolean] {
+  const line = pageLines.find((l) => l.id === lineId);
+  if (!line) return [false, false];
+  const others = pageLines.filter((l) => l.id !== lineId);
+  return endpointsOf(line).map(({ x, y }) => {
+    const sharedByOther = others.some((l) => endpointsOf(l).some((p) => sharesPoint(p.x, p.y, x, y, eps)));
+    if (sharedByOther) return false;
+    const hasBranch = branchesOnPage.some((b) => sharesPoint(b.x, b.y, x, y, eps));
+    return !hasBranch;
+  }) as [boolean, boolean];
+}
 
 /** Sørger for at hver RENE skjøt (nøyaktig to segmenter møtes) på de endrede linjene
  * har en overgang når dimensjonene er ulike – og ingen når de er like. Idempotent: en
@@ -101,23 +146,13 @@ function syncTransitionsAtJoints(
       [line.points[n - 2], line.points[n - 1]],
     ];
     for (const [jx, jy] of joints) {
-      const at = pageLines.filter((l) => {
-        const m = l.points.length;
-        return (
-          (Math.abs(l.points[0] - jx) < JOINT_EPS && Math.abs(l.points[1] - jy) < JOINT_EPS) ||
-          (Math.abs(l.points[m - 2] - jx) < JOINT_EPS && Math.abs(l.points[m - 1] - jy) < JOINT_EPS)
-        );
-      });
+      const at = pageLines.filter((l) => endpointsOf(l).some((p) => sharesPoint(p.x, p.y, jx, jy)));
       if (at.length !== 2) continue; // 1 = fri ende, ≥3 = avgreining – ikke en overgang
       const other = at.find((l) => l.id !== line.id);
       if (!other || other.subId !== line.subId || other.material !== line.material) continue;
 
       const i = out.findIndex(
-        (t) =>
-          t.page === line.page &&
-          t.subId === line.subId &&
-          Math.abs(t.x - jx) < JOINT_EPS &&
-          Math.abs(t.y - jy) < JOINT_EPS,
+        (t) => t.page === line.page && t.subId === line.subId && sharesPoint(t.x, t.y, jx, jy),
       );
       if (other.dimension === line.dimension) {
         // Ikke lenger en dimensjonsendring → fjern en ev. overgang, ellers ville
@@ -140,6 +175,64 @@ function syncTransitionsAtJoints(
     }
   }
   return out;
+}
+
+/** Ligger (x,y) INNVENDIG på kroppen til `line` (ikke i et av dens egne endepunkter)?
+ * Brukt til å avgjøre om en gjenværende linje fortsatt er «hovedledningen» en
+ * avgreining sitter på – uten dette ville selve avstikkeren (hvis endepunkt ligger
+ * nettopp der) kunne maskere seg som hovedledningen når den faktiske hovedledningen
+ * er slettet. */
+function isInteriorOnBody(
+  line: LineEntity,
+  x: number,
+  y: number,
+  subId: string,
+  material: string,
+  mpp: number | null,
+): boolean {
+  if (!onBodyOf(line, x, y, subId, material, mpp)) return false;
+  const n = line.points.length;
+  if (sharesPoint(x, y, line.points[0], line.points[1])) return false;
+  if (sharesPoint(x, y, line.points[n - 2], line.points[n - 1])) return false;
+  return true;
+}
+
+/** Fjerner bend/overgang/avgreining som ikke lenger har noen linje å sitte på, etter at
+ * en eller flere linjer er slettet. `linesAfter` er tilstanden ETTER slettingen.
+ * Kjøres kun fra deleteSelected/deleteMany – IKKE fra splitLineAt (begge halvdeler
+ * beholder alle endepunkter), undo/redo (gjenoppretter hele snapshots), eller under
+ * drag (kortvarige grad-1-tilstander ville ryddet bort markører som skal bestå).
+ *
+ * Regel, med deg = endpointDegree(pageLinesAfter, m.x, m.y):
+ *  - bend/overgang: foreldreløs når deg < 2 (begge lages kun der nøyaktig to
+ *    segmenter møtes – én gjenværende arm er ikke lenger en skjøt).
+ *  - avgreining: fjernes når deg === 0 (ingen arm igjen), ELLER når ingen
+ *    gjenværende linje har punktet innvendig på seg (hovedledningen er borte).
+ * Alle tvilstilfeller faller på siden av å BEHOLDE markøren (under-sletting). */
+function pruneOrphanFittings(
+  linesAfter: LineEntity[],
+  page: number,
+  bends: BendEntity[],
+  transitions: TransitionEntity[],
+  branches: BranchEntity[],
+  mpp: number | null,
+): { bends: BendEntity[]; transitions: TransitionEntity[]; branches: BranchEntity[] } {
+  const pageLines = linesAfter.filter((l) => l.page === page);
+
+  const keepJointMarker = <T extends { page: number; x: number; y: number }>(m: T): boolean =>
+    m.page !== page || endpointDegree(pageLines, m.x, m.y) >= 2;
+
+  const keepBranch = (b: BranchEntity): boolean => {
+    if (b.page !== page) return true;
+    if (endpointDegree(pageLines, b.x, b.y) === 0) return false;
+    return pageLines.some((l) => isInteriorOnBody(l, b.x, b.y, b.subId, b.material, mpp));
+  };
+
+  return {
+    bends: bends.filter(keepJointMarker),
+    transitions: transitions.filter(keepJointMarker),
+    branches: branches.filter(keepBranch),
+  };
 }
 
 /** Hva et flytte-/kopier-steg (Flytt/Kopier-verktøyet, eller piltastene) skal virke på.
@@ -241,12 +334,7 @@ export function planMove(s: MoveSourceState, opts: { forceRigid?: boolean } = {}
   // Mid-kropp-markører (påstikk/overganger) på en av de flyttede linjene – samme
   // halvbredde-idiom som moveSingleLine sin onBody, sjekket mot ALLE flyttede linjer.
   const onBodyOfMoving = (x: number, y: number, subId: string, material: string): boolean =>
-    movingLines.some((l) => {
-      if (l.subId !== subId || l.material !== material) return false;
-      const halfW = Math.max(mmToPx(dimensionDiameterMm(l.dimension), s.scale.metersPerPixel) / 2, 4);
-      const cp = closestPointOnPolyline(l.points, { x, y });
-      return cp != null && cp.distance <= halfW;
-    });
+    movingLines.some((l) => onBodyOf(l, x, y, subId, material, s.scale.metersPerPixel));
 
   const onPage = <T extends { page: number }>(arr: T[]) => arr.filter((e) => e.page === s.currentPage);
 
@@ -361,6 +449,62 @@ export function applyMovePlan(s: MoveSourceState, plan: MovePlan, dx: number, dy
   };
 }
 
+/** Alle naboer (på siden, ikke `excludeLineId` selv) som deler endepunktet (x,y) –
+ * ett-hopps søk, ikke rekursivt. Trukket ut av `applySingleLineMove` uendret, slik at
+ * `moveLineVertex` (endepunkt-drag) kan gjenbruke nøyaktig samme nabo-regel som
+ * kropp-draget allerede bruker, i stedet for å duplisere den. */
+function neighborsAtPoint(
+  pageLines: LineEntity[],
+  excludeLineId: string,
+  x: number,
+  y: number,
+  eps = JOINT_EPS,
+): { line: LineEntity; vertexIndex: number }[] {
+  const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
+  for (const other of pageLines) {
+    if (other.id === excludeLineId) continue;
+    const on = other.points.length;
+    for (const i of [0, on - 2]) {
+      if (sharesPoint(other.points[i], other.points[i + 1], x, y, eps)) {
+        neighbors.push({ line: other, vertexIndex: i });
+      }
+    }
+  }
+  return neighbors;
+}
+
+/** Turn-vinkel i grader mellom (prev→cur) og (cur→next), samme formel som
+ * polylineBendAngles (geometry.ts) – brukt til å regne om en bend-markørs angleDeg når
+ * naboen på den ene siden har endret retning etter flytting/drag. */
+function turnAngleDeg(
+  prev: { x: number; y: number },
+  cur: { x: number; y: number },
+  next: { x: number; y: number },
+): number {
+  const a1 = Math.atan2(cur.y - prev.y, cur.x - prev.x);
+  const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
+  let turn = ((a2 - a1) * 180) / Math.PI;
+  turn = ((((turn + 180) % 360) + 360) % 360) - 180;
+  return Math.abs(turn);
+}
+
+/** Ligger punktet (x,y) på KROPPEN (ikke bare i et endepunkt) til `line`, innenfor en
+ * halv rørbredde + margin – og krever samme subId/material, så en markør på en
+ * parallell nabo-kanal ikke plukkes opp ved en feil. `mpp` = scale.metersPerPixel. */
+function onBodyOf(
+  line: LineEntity,
+  x: number,
+  y: number,
+  subId: string,
+  material: string,
+  mpp: number | null,
+): boolean {
+  if (subId !== line.subId || material !== line.material) return false;
+  const halfW = Math.max(mmToPx(dimensionDiameterMm(line.dimension), mpp) / 2, 4);
+  const cp = closestPointOnPolyline(line.points, { x, y });
+  return cp != null && cp.distance <= halfW;
+}
+
 /** Rigid flytting av én enkelt linje, med «skjøting» av naboer: L selv oversettes
  * alltid nøyaktig med (dx,dy) – akkurat dit brukeren drar den – mens hver nabo som
  * deler et endepunkt med L kun får SITT delte hjørnepunkt flyttet til L sitt nye
@@ -386,9 +530,7 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
   }
 
   const pageLines = s.lines.filter((l) => l.page === line.page);
-  const eps = 0.5;
-  const near = (ax: number, ay: number, bx: number, by: number) =>
-    Math.abs(ax - bx) < eps && Math.abs(ay - by) < eps;
+  const near = sharesPoint;
 
   const n = line.points.length;
   const oldEndpoints = [
@@ -413,16 +555,7 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
   const singleNeighborFar: ({ x: number; y: number } | null)[] = [null, null];
 
   oldEndpoints.forEach((E, k) => {
-    const neighbors: { line: LineEntity; vertexIndex: number }[] = [];
-    for (const other of pageLines) {
-      if (other.id === lineId) continue;
-      const on = other.points.length;
-      for (const i of [0, on - 2]) {
-        if (near(other.points[i], other.points[i + 1], E.x, E.y)) {
-          neighbors.push({ line: other, vertexIndex: i });
-        }
-      }
-    }
+    const neighbors = neighborsAtPoint(pageLines, lineId, E.x, E.y);
     // Alle naboer (uansett antall) følger det delte skjøtpunktet til L sin NYE
     // posisjon; deres motsatte ende står fast, så naboen «skjøtes» i stedet for at L
     // selv formes om.
@@ -455,28 +588,13 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
     return null;
   };
 
-  // Turn-vinkel i grader mellom (prev→cur) og (cur→next), samme formel som
-  // polylineBendAngles (geometry.ts) – brukt til å regne om en bend-markørs
-  // angleDeg når naboen på den ene siden har endret retning etter flyttingen.
-  const turnAngleDeg = (prev: { x: number; y: number }, cur: { x: number; y: number }, next: { x: number; y: number }): number => {
-    const a1 = Math.atan2(cur.y - prev.y, cur.x - prev.x);
-    const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
-    let turn = ((a2 - a1) * 180) / Math.PI;
-    turn = ((((turn + 180) % 360) + 360) % 360) - 180;
-    return Math.abs(turn);
-  };
-
   // Påstikk/overganger sitter ofte MIDT PÅ kroppen til den flyttede linjen (ikke i et
   // endepunkt), så `remap` alene fanger dem ikke – de ville blitt liggende igjen mens
-  // kanalen gled ut under dem. Test derfor (mot linjens GAMLE geometri, før flytting)
-  // om markøren ligger på selve kroppen, innenfor en halv rørbredde + margin, og krev
-  // samme subId/material for å unngå å plukke opp en markør på en parallell nabo-kanal.
-  const halfW = Math.max(mmToPx(dimensionDiameterMm(line.dimension), s.scale.metersPerPixel) / 2, 4);
-  const onBody = (x: number, y: number, subId: string, material: string): boolean => {
-    if (subId !== line.subId || material !== line.material) return false;
-    const cp = closestPointOnPolyline(line.points, { x, y });
-    return cp != null && cp.distance <= halfW;
-  };
+  // kanalen gled ut under dem. `onBodyOf` (modulnivå) tester mot linjens GAMLE
+  // geometri (før flytting), innenfor en halv rørbredde + margin, med samme
+  // subId/material-krav som før.
+  const onBody = (x: number, y: number, subId: string, material: string): boolean =>
+    onBodyOf(line, x, y, subId, material, s.scale.metersPerPixel);
 
   return {
     lines: s.lines.map((l) => {
@@ -1973,7 +2091,14 @@ export const useStore = create<AppState>((set, get) => {
     if (!selectedId) return;
     recordHistory();
     if (selectedKind === 'line') {
-      set((s) => ({ lines: s.lines.filter((l) => l.id !== selectedId) }));
+      set((s) => {
+        const lines = s.lines.filter((l) => l.id !== selectedId);
+        const deletedLine = s.lines.find((l) => l.id === selectedId);
+        const pruned = deletedLine
+          ? pruneOrphanFittings(lines, deletedLine.page, s.bends, s.transitions, s.branches, s.scale.metersPerPixel)
+          : { bends: s.bends, transitions: s.transitions, branches: s.branches };
+        return { lines, ...pruned };
+      });
     } else if (selectedKind === 'symbol') {
       set((s) => ({ symbols: s.symbols.filter((sy) => sy.id !== selectedId) }));
     } else if (selectedKind === 'branch') {
@@ -2087,18 +2212,26 @@ export const useStore = create<AppState>((set, get) => {
     if (ids.length === 0) return;
     recordHistory();
     const idSet = new Set(ids);
-    set((s) => ({
-      lines: s.lines.filter((l) => !idSet.has(l.id)),
-      symbols: s.symbols.filter((sy) => !idSet.has(sy.id)),
-      branches: s.branches.filter((b) => !idSet.has(b.id)),
-      transitions: s.transitions.filter((t) => !idSet.has(t.id)),
-      bends: s.bends.filter((b) => !idSet.has(b.id)),
-      annotations: s.annotations.filter((a) => !idSet.has(a.id)),
-      tags: s.tags.filter((t) => !idSet.has(t.id)),
-      clamps: s.clamps.filter((c) => !idSet.has(c.id)),
-      measurements: s.measurements.filter((m) => !idSet.has(m.id)),
-      multiSelection: new Set<string>(),
-    }));
+    set((s) => {
+      const lines = s.lines.filter((l) => !idSet.has(l.id));
+      const branches = s.branches.filter((b) => !idSet.has(b.id));
+      const transitions = s.transitions.filter((t) => !idSet.has(t.id));
+      const bends = s.bends.filter((b) => !idSet.has(b.id));
+      const anyLineDeleted = s.lines.some((l) => idSet.has(l.id));
+      const pruned = anyLineDeleted
+        ? pruneOrphanFittings(lines, s.currentPage, bends, transitions, branches, s.scale.metersPerPixel)
+        : { bends, transitions, branches };
+      return {
+        lines,
+        symbols: s.symbols.filter((sy) => !idSet.has(sy.id)),
+        ...pruned,
+        annotations: s.annotations.filter((a) => !idSet.has(a.id)),
+        tags: s.tags.filter((t) => !idSet.has(t.id)),
+        clamps: s.clamps.filter((c) => !idSet.has(c.id)),
+        measurements: s.measurements.filter((m) => !idSet.has(m.id)),
+        multiSelection: new Set<string>(),
+      };
+    });
   },
 
   duplicateSelection: (dx, dy) => {
