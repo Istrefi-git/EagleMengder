@@ -3,7 +3,7 @@ import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, 
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
-import { applyMovePlan, clampScale, findConnectedLineIds, openEndsOf, planMove } from '../store';
+import { applyMovePlan, clampScale, findConnectedLineIds, openEndsOf, planMove, sharesPoint } from '../store';
 import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
@@ -160,7 +160,7 @@ export function PdfCanvas() {
   const select = useStore((s) => s.select);
   const setTool = useStore((s) => s.setTool);
   const clearSelection = useStore((s) => s.clearSelection);
-  const updateLinePoints = useStore((s) => s.updateLinePoints);
+  const moveLineVertex = useStore((s) => s.moveLineVertex);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
@@ -1959,6 +1959,38 @@ export function PdfCanvas() {
     const pageBranches = branches.filter((b) => b.page === currentPage);
     return openEndsOf(pageLines, selectedId, pageBranches);
   }, [selectedKind, selectedId, lines, branches, currentPage]);
+  // Knekkpunkt-håndtakene (vertex-drag, C5a) og bend-/overgangs-/avgreiningsmarkørene
+  // sitter alltid i NØYAKTIG samme punkt (en bend/overgang ER en delt linje-endepunkt,
+  // og en avgreinings-arms endepunkt ER selve avgreiningspunktet) – markørene rendres
+  // etter linjene og ville derfor alltid vunnet klikket, slik at man aldri fikk tak i
+  // håndtaket for å dra det. Gjør markøren midlertidig ikke-interaktiv akkurat der den
+  // merkede linjas eget endepunkt er, så håndtaket blir klikkbart; markøren er fortsatt
+  // klikkbar fra alle andre tilstander (annen/ingen linje merket).
+  const selectedLineEndpoints =
+    selectedKind === 'line'
+      ? (() => {
+          const l = lines.find((x) => x.id === selectedId);
+          if (!l) return [];
+          const n = l.points.length;
+          return [
+            { x: l.points[0], y: l.points[1] },
+            { x: l.points[n - 2], y: l.points[n - 1] },
+          ];
+        })()
+      : [];
+  const sitsAtSelectedVertex = (x: number, y: number) =>
+    selectedLineEndpoints.some((p) => sharesPoint(p.x, p.y, x, y));
+  // Konva sin trefftest følger rendre-rekkefølgen: en linje som er tegnet ETTER en
+  // annen (høyere indeks i `lines`) ligger alltid OVENPÅ den forrige der de deler et
+  // endepunkt – deres hit-linjer er langt bredere enn de 6px vertex-håndtakene, så det
+  // ville i praksis vært umulig å dra et skjøtepunkt der man tilfeldigvis hadde merket
+  // den EARLIER-tegnede av de to linjene. Fix: den merkede linja rendres alltid SIST
+  // (uten å endre selve `lines`-arrayet – kun rekkefølgen for DENNE rendringen), slik
+  // at dens vertex-håndtak alltid vinner over en nabolinjes kropp, uansett tegnerekkefølge.
+  const renderLines =
+    selectedKind === 'line' && selectedId && visibleLines.some((l) => l.id === selectedId)
+      ? [...visibleLines.filter((l) => l.id !== selectedId), ...visibleLines.filter((l) => l.id === selectedId)]
+      : visibleLines;
   // Dobbeltklikk på en linje merker HELE den sammenhengende strekningen (valg 5).
   // Traverserer alle sidens linjer (skjulte inkludert – en skjult nabo skal fortsatt
   // telle som del av strekningen topologisk), men resultatet filtreres til synlige
@@ -2375,7 +2407,7 @@ export function PdfCanvas() {
               />
             );
           })}
-          {visibleLines
+          {renderLines
             .map((line) => (
               <LineNode
                 key={line.id}
@@ -2389,8 +2421,10 @@ export function PdfCanvas() {
                   select(line.id, 'line');
                 }}
                 onToggleMultiSelect={() => toggleMultiSelect(line.id)}
-                onChange={(pts) => updateLinePoints(line.id, pts)}
                 onMove={(dx, dy) => moveSingleLine(line.id, dx, dy, true)}
+                onMoveVertex={(vertexIndex, x, y, detach) =>
+                  moveLineVertex(line.id, vertexIndex, x, y, { detach })
+                }
                 onExtend={(fromStart) => seedContinuation(line, fromStart)}
                 onOpenMenu={(point) =>
                   setCanvasMenu({
@@ -2442,7 +2476,7 @@ export function PdfCanvas() {
               invScale={invScale}
               selected={t.id === selectedId || multiSelection.has(t.id)}
               hideLabel={hideComponentLabels}
-              interactive={tool === 'select'}
+              interactive={tool === 'select' && !sitsAtSelectedVertex(t.x, t.y)}
               onSelect={() => select(t.id, 'transition')}
             />
           ))}
@@ -2453,7 +2487,7 @@ export function PdfCanvas() {
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
               hideLabel={hideComponentLabels}
-              interactive={tool === 'select'}
+              interactive={tool === 'select' && !sitsAtSelectedVertex(b.x, b.y)}
               onSelect={() => select(b.id, 'branch')}
               onEditType={() =>
                 setPendingBranchChoice({
@@ -2476,7 +2510,7 @@ export function PdfCanvas() {
               bend={b}
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
-              interactive={tool === 'select'}
+              interactive={tool === 'select' && !sitsAtSelectedVertex(b.x, b.y)}
               onSelect={() => select(b.id, 'bend')}
             />
           ))}
@@ -3019,11 +3053,15 @@ interface LineNodeProps {
   metersPerPixel: number | null;
   onSelect: () => void;
   onToggleMultiSelect: () => void;
-  onChange: (points: number[]) => void;
   /** Flytter hele linjen (kropp-dra) med (dx,dy) – strekker tilkoblede naboer og drar
-   * med skjøt-markører/monterte symboler, i motsetning til onChange som kun endrer
-   * denne linjens egne punkter (brukt av knekkpunkt-håndtakene). */
+   * med skjøt-markører/monterte symboler, i motsetning til onMoveVertex som kun
+   * flytter ETT av de to endepunktene (brukt av knekkpunkt-håndtakene). */
   onMove: (dx: number, dy: number) => void;
+  /** Flytter endepunkt `vertexIndex` (0 eller points.length-2) til (x,y) – strekker en
+   * delt nabo med til det nye punktet og regner om bend-vinkelen i skjøtet, med mindre
+   * `detach` (Alt-tasten) er satt, som gir den gamle, naive «bare dette punktet»-
+   * oppførselen. Se moveLineVertex i store.ts. */
+  onMoveVertex: (vertexIndex: number, x: number, y: number, detach: boolean) => void;
   onExtend: (fromStart: boolean) => void;
   /** Høyreklikk på kroppen – gir punktet (bildekoordinater, projisert på selve
    * senterlinjen) og vinkelen der, til å plassere kontekstmenyen med. */
@@ -3050,8 +3088,8 @@ function LineNode({
   metersPerPixel,
   onSelect,
   onToggleMultiSelect,
-  onChange,
   onMove,
+  onMoveVertex,
   onExtend,
   onOpenMenu,
   openEnds,
@@ -3079,11 +3117,8 @@ function LineNode({
   const lenPx = polylineLength(line.points);
   const bends = selected ? polylineBendAngles(line.points) : [];
 
-  function setVertex(i: number, x: number, y: number) {
-    const next = line.points.slice();
-    next[i] = x;
-    next[i + 1] = y;
-    onChange(next);
+  function setVertex(i: number, x: number, y: number, detach: boolean) {
+    onMoveVertex(i, x, y, detach);
   }
 
   return (
@@ -3196,14 +3231,17 @@ function LineNode({
                 // 45°-multiplum, målt fra linjens ANDRE endepunkt – samme regel og
                 // samme hjelpefunksjon (snapFirstPoint) som når man tegner en ny linje.
                 // Uten Shift er strekket fritt, som før.
+                // Alt holdt inne: den gamle, naive oppførselen – kobler bevisst fra
+                // naboen i stedet for å strekke den med (se moveLineVertex/detach).
+                const detach = e.evt.altKey;
                 if (e.evt.shiftKey) {
                   const otherIdx = idx === 0 ? 2 : 0;
                   const other = { x: line.points[otherIdx], y: line.points[otherIdx + 1] };
                   const snapped = snapFirstPoint(other, { x: e.target.x(), y: e.target.y() });
                   e.target.position(snapped); // ellers tegnes håndtaket på rå pekerposisjon
-                  setVertex(idx, snapped.x, snapped.y);
+                  setVertex(idx, snapped.x, snapped.y, detach);
                 } else {
-                  setVertex(idx, e.target.x(), e.target.y());
+                  setVertex(idx, e.target.x(), e.target.y(), detach);
                 }
               }}
               onDragEnd={onVertexDragEnd}

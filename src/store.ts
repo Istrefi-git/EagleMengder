@@ -642,6 +642,109 @@ function applySingleLineMove(s: MoveSourceState, lineId: string, dx: number, dy:
   };
 }
 
+/** Flytter ETT endepunkt av `line` til (x,y), og strekker enhver nabo som delte det
+ * GAMLE punktet med til det nye – samme skjøte-regel som applySingleLineMove bruker
+ * for kropp-drag, bare begrenset til ett endepunkt i stedet for begge. Ved nøyaktig
+ * én nabo (en ekte bend/fortsettelse, ikke en forgreiningsnode) regnes bend-markørens
+ * angleDeg om med samme turnAngleDeg-formel.
+ *
+ * Bevisst UTENFOR scope her (C5b, ikke gjort): markører som ligger MIDT PÅ selve den
+ * dragede linjas egen kropp (tag/klammer/montert utstyr) – et endepunkt-drag endrer
+ * både lengde og retning på linja, så en flat (dx,dy)-forskyvning (slik kropp-drag
+ * bruker) ville plassert dem feil. De blir stående som i dag inntil C5b legger til
+ * parameter-t-bevart reprojisering. */
+function applyVertexMove(
+  s: MoveSourceState,
+  lineId: string,
+  vertexIndex: number,
+  x: number,
+  y: number,
+  opts: { detach?: boolean } = {},
+): MoveDrawPatch {
+  const unchanged: MoveDrawPatch = {
+    lines: s.lines,
+    symbols: s.symbols,
+    transitions: s.transitions,
+    branches: s.branches,
+    bends: s.bends,
+    tags: s.tags,
+    clamps: s.clamps,
+    annotations: s.annotations,
+    measurements: s.measurements,
+  };
+  const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
+  if (!line) return unchanged;
+
+  const oldX = line.points[vertexIndex];
+  const oldY = line.points[vertexIndex + 1];
+
+  const movedLines = s.lines.map((l) => {
+    if (l.id !== lineId) return l;
+    const pts = l.points.slice();
+    pts[vertexIndex] = x;
+    pts[vertexIndex + 1] = y;
+    return { ...l, points: pts };
+  });
+
+  if (opts.detach) return { ...unchanged, lines: movedLines };
+
+  const pageLines = s.lines.filter((l) => l.page === line.page);
+  const neighbors = neighborsAtPoint(pageLines, lineId, oldX, oldY);
+
+  const lines = movedLines.map((l) => {
+    const nb = neighbors.find((n) => n.line.id === l.id);
+    if (!nb) return l;
+    const pts = l.points.slice();
+    pts[nb.vertexIndex] = x;
+    pts[nb.vertexIndex + 1] = y;
+    return { ...l, points: pts };
+  });
+
+  // Naboens faste fjern-ende – kun satt ved nøyaktig én nabo (ekte bend), samme idiom
+  // som applySingleLineMove sin singleNeighborFar.
+  let singleNeighborFar: { x: number; y: number } | null = null;
+  if (neighbors.length === 1) {
+    const nb = neighbors[0];
+    const nn = nb.line.points.length;
+    singleNeighborFar =
+      nb.vertexIndex === 0
+        ? { x: nb.line.points[nn - 2], y: nb.line.points[nn - 1] }
+        : { x: nb.line.points[0], y: nb.line.points[1] };
+  }
+  // L sitt eget andre punkt (det som IKKE dras) – "cur"-siden av skjøtet i
+  // turnAngleDeg, samme rolle som adjacentOnL i applySingleLineMove.
+  const otherIndex = vertexIndex === 0 ? line.points.length - 2 : 0;
+  const adjacentOnL = { x: line.points[otherIndex], y: line.points[otherIndex + 1] };
+
+  const remap = (px: number, py: number): { x: number; y: number } | null =>
+    sharesPoint(px, py, oldX, oldY) ? { x, y } : null;
+
+  return {
+    lines,
+    bends: s.bends.map((b) => {
+      const r = remap(b.x, b.y);
+      if (!r) return b;
+      const angleDeg = singleNeighborFar
+        ? classifyBendAngle(turnAngleDeg(adjacentOnL, r, singleNeighborFar))
+        : b.angleDeg;
+      return { ...b, x: r.x, y: r.y, angleDeg };
+    }),
+    transitions: s.transitions.map((t) => {
+      const r = remap(t.x, t.y);
+      return r ? { ...t, x: r.x, y: r.y } : t;
+    }),
+    branches: s.branches.map((b) => {
+      const r = remap(b.x, b.y);
+      return r ? { ...b, x: r.x, y: r.y } : b;
+    }),
+    symbols: s.symbols,
+    tags: s.tags,
+    clamps: s.clamps,
+    annotations: s.annotations,
+    measurements: s.measurements,
+  };
+}
+
 export interface ViewTransform {
   scale: number;
   x: number;
@@ -1109,6 +1212,15 @@ interface AppState {
    * velger hvilken halvdel (om noen) som skal markeres etterpå. */
   splitLineAt: (id: string, x: number, y: number, selectHalf?: 'a' | 'b' | 'none') => void;
   updateLinePoints: (id: string, points: number[]) => void;
+  /** Flytter ETT endepunkt (vertexIndex 0 eller points.length-2) av en linje. I
+   * motsetning til updateLinePoints strekker denne enhver nabo som delte akkurat det
+   * gamle punktet med til det nye, og flytter/regner om bend-markøren i skjøtet –
+   * samme «skjøting»-regel som kropp-drag (applySingleLineMove) bruker, se
+   * applyVertexMove. `detach: true` (Alt-tasten) gir den gamle, naive oppførselen –
+   * kun denne linjas eget punkt endres, naboen står igjen – som en bevisst
+   * frakobling. Kalles per frame under drag (billig, O(sidens linjer)); selve
+   * historikk-batchingen gjøres av kalleren (onVertexDragStart/-End). */
+  moveLineVertex: (lineId: string, vertexIndex: number, x: number, y: number, opts?: { detach?: boolean }) => void;
   updateLineProps: (
     id: string,
     patch: Partial<Pick<LineEntity, 'subId' | 'material' | 'dimension' | 'systemId'>>,
@@ -1666,6 +1778,11 @@ export const useStore = create<AppState>((set, get) => {
   updateLinePoints: (id, points) => {
     recordHistory();
     set((s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, points } : l)) }));
+  },
+
+  moveLineVertex: (lineId, vertexIndex, x, y, opts) => {
+    recordHistory();
+    set((s) => applyVertexMove(s, lineId, vertexIndex, x, y, opts));
   },
 
   updateLineProps: (id, patch) => {
