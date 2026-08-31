@@ -3,7 +3,7 @@ import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, 
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
-import { applyMovePlan, clampScale, openEndsOf, planMove } from '../store';
+import { applyMovePlan, clampScale, findConnectedLineIds, openEndsOf, planMove } from '../store';
 import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
@@ -1959,6 +1959,21 @@ export function PdfCanvas() {
     const pageBranches = branches.filter((b) => b.page === currentPage);
     return openEndsOf(pageLines, selectedId, pageBranches);
   }, [selectedKind, selectedId, lines, branches, currentPage]);
+  // Dobbeltklikk på en linje merker HELE den sammenhengende strekningen (valg 5).
+  // Traverserer alle sidens linjer (skjulte inkludert – en skjult nabo skal fortsatt
+  // telle som del av strekningen topologisk), men resultatet filtreres til synlige
+  // linjer før det settes som utvalg, slik at et skjult system aldri masse-merkes.
+  const selectConnectedRun = useCallback(
+    (lineId: string) => {
+      const pageLines = lines.filter((l) => l.page === currentPage);
+      const ids = Array.from(findConnectedLineIds(pageLines, [lineId])).filter(
+        (id) => !isSubHidden(lines.find((l) => l.id === id)?.subId ?? ''),
+      );
+      clearSelection();
+      setMultiSelection(ids);
+    },
+    [lines, currentPage, hiddenCategories, clearSelection, setMultiSelection],
+  );
   // Kanalstrekninger (kun kanaler, ikke rør) gruppert til sammenhengende «runs» for
   // veggtegning – se buildDuctRunWalls. Rendres i ett stykke per strekning slik at
   // veggene blir sammenhengende (avrundet bend, innsnevret overgang), i stedet for at
@@ -2388,6 +2403,7 @@ export function PdfCanvas() {
                 onOpenEndMenu={(fromStart, x, y) =>
                   setCanvasMenu({ target: { type: 'openEnd', lineId: line.id, fromStart, x, y }, x, y })
                 }
+                onSelectRun={() => selectConnectedRun(line.id)}
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
                 customColors={customColors}
@@ -3016,6 +3032,9 @@ interface LineNodeProps {
    * ikke er den merkede (plusset vises kun for den ene, aktivt merkede linja). */
   openEnds: [boolean, boolean] | null;
   onOpenEndMenu: (fromStart: boolean, x: number, y: number) => void;
+  /** Dobbeltklikk på kroppen – merker hele den sammenhengende strekningen linja er
+   * en del av (valg 5), ikke bare dette 2-punkts segmentet. */
+  onSelectRun: () => void;
   pipeRenderStyle: PipeRenderStyle;
   customColors: Record<string, string>;
   onVertexDragStart: () => void;
@@ -3037,6 +3056,7 @@ function LineNode({
   onOpenMenu,
   openEnds,
   onOpenEndMenu,
+  onSelectRun,
   pipeRenderStyle,
   customColors,
   onVertexDragStart,
@@ -3114,6 +3134,13 @@ function LineNode({
           else onSelect();
         }}
         onTap={onSelect}
+        onDblClick={(e) => {
+          // Egen håndtak (ikke Stage-ens onDblClick, som kun avslutter en armert
+          // tegneøkt) – lytter uansett bare mens tool==='select' (listening={editable}),
+          // så det kan aldri kollidere med dobbeltklikk-avslutter-strekning.
+          e.cancelBubble = true;
+          onSelectRun();
+        }}
         onDragEnd={(e) => {
           const node = e.target;
           const dx = node.x();

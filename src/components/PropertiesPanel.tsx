@@ -1,5 +1,5 @@
 import { Trash2 } from 'lucide-react';
-import { useStore } from '../store';
+import { findConnectedLineIds, useStore } from '../store';
 import {
   CATEGORIES,
   CLAMP_ROD_DIAMETERS,
@@ -57,10 +57,19 @@ export function PropertiesPanel() {
     const commonMaterial = selectedLines.every((l) => l.material === selectedLines[0]?.material)
       ? selectedLines[0]?.material
       : undefined;
+    // «Strekning» når HELE utvalget er linjer OG de henger sammen som ÉN komponent
+    // (samme regel dobbeltklikk-på-kroppen bruker, se PdfCanvas' selectConnectedRun) –
+    // ikke bare et vilkårlig gummibånd-utvalg av flere separate rør/kanaler.
+    const isOneRun =
+      selectedLines.length === ids.length &&
+      ids.length > 0 &&
+      findConnectedLineIds(selectedLines, [selectedLines[0].id]).size === selectedLines.length;
     return (
       <section className="properties-panel">
         <div className="panel-header">
-          <h3>{ids.length} valgt</h3>
+          <h3>
+            {isOneRun ? `Strekning · ${ids.length} ${ids.length === 1 ? 'segment' : 'segmenter'}` : `${ids.length} valgt`}
+          </h3>
         </div>
         <div className="field readonly">
           <span>Samlet lengde</span>
@@ -107,6 +116,29 @@ export function PropertiesPanel() {
                 ))}
               </select>
             </label>
+            {customSystems.length > 0 && (
+              <label className="field">
+                <span>System (alle)</span>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return; // "Velg…"-plassholderen – ingen endring
+                    updateManyLineProps(ids, { systemId: v === '__clear__' ? undefined : v });
+                  }}
+                >
+                  <option value="" disabled>
+                    Velg…
+                  </option>
+                  <option value="__clear__">Ingen</option>
+                  {customSystems.map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </>
         )}
         {!sub && (
