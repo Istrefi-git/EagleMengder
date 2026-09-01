@@ -108,6 +108,7 @@ export const useProjectsStore = create<ProjectsState>()(
                 annotations: [],
                 tags: [],
                 clamps: [],
+                caps: [],
                 measurements: [],
                 scale: src.scale,
                 lineConfig: src.lineConfig,

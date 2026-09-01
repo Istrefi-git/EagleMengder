@@ -1,9 +1,9 @@
-import { GitBranch, Move, Wrench, Trash2 } from 'lucide-react';
+import { CircleSlash, GitBranch, Move, Wrench, Trash2 } from 'lucide-react';
 import { useStore } from '../store';
 import type { ViewTransform, CanvasMenuTarget } from '../store';
 import { categoryOf } from '../types';
 
-export type CanvasMenuCommand = 'branch' | 'clamp' | 'move' | 'delete' | 'continue';
+export type CanvasMenuCommand = 'branch' | 'clamp' | 'move' | 'delete' | 'continue' | 'cap';
 
 /** Høyreklikk-meny for et rør/kanal, modellert på BranchChoicePopover (samme
  * verden→skjerm-posisjonering, samme flytende-panel-stil) – men med en
@@ -41,10 +41,20 @@ export function CanvasContextMenu({
   return (
     <div className="canvas-menu" style={{ left: screenX, top: screenY }}>
       {menu.target.type === 'openEnd' ? (
-        <button className="canvas-menu-item" onClick={() => run('continue')}>
-          <GitBranch size={14} />
-          Fortsett på {noun}
-        </button>
+        <>
+          <button className="canvas-menu-item" onClick={() => run('continue')}>
+            <GitBranch size={14} />
+            Fortsett på {noun}
+          </button>
+          {/* Blending finnes kun for kanaler i denne omgangen – et rørs åpne ende blendes
+              fysisk med en propp/plugg, men det er ikke modellert som en egen markør her. */}
+          {kind === 'duct' && (
+            <button className="canvas-menu-item" onClick={() => run('cap')}>
+              <CircleSlash size={14} />
+              Blend enden
+            </button>
+          )}
+        </>
       ) : (
         <>
           <button className="canvas-menu-item" onClick={() => run('branch')}>

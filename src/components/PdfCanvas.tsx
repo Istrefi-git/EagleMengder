@@ -33,6 +33,7 @@ import type {
   BranchEntity,
   ClampEntity,
   CustomComponentDef,
+  DuctCapEntity,
   LineEntity,
   MeasurementEntity,
   MeasurementType,
@@ -147,6 +148,17 @@ export function PdfCanvas() {
   const updateTagLabel = useStore((s) => s.updateTagLabel);
   const clamps = useStore((s) => s.clamps);
   const addClamp = useStore((s) => s.addClamp);
+  const caps = useStore((s) => s.caps);
+  const addCap = useStore((s) => s.addCap);
+  // Er denne enden av linja blendet (endelokk)? Rent oppslag – ingen egen x/y lagres på
+  // DuctCapEntity, den er alltid akkurat linjas eget gjeldende start-/sluttpunkt. Må
+  // deklareres FØR handleStageMouseDown/finishLine (som bruker den i sine egne
+  // useCallback-deps) – ellers TDZ-krasj («Cannot access before initialization»), siden
+  // deps-arrayet evalueres med det samme, ikke lat som selve funksjonskroppen.
+  const isCapped = useCallback(
+    (lineId: string, fromStart: boolean) => caps.some((c) => c.lineId === lineId && c.fromStart === fromStart),
+    [caps],
+  );
   const updateClampPosition = useStore((s) => s.updateClampPosition);
   const nudgeClamp = useStore((s) => s.nudgeClamp);
   const measurements = useStore((s) => s.measurements);
@@ -1180,6 +1192,7 @@ export function PdfCanvas() {
 
       if (target.type === 'openEnd') {
         if (command === 'continue') seedContinuation(line, target.fromStart);
+        else if (command === 'cap') addCap(line.id, target.fromStart);
         return;
       }
 
@@ -1215,6 +1228,7 @@ export function PdfCanvas() {
       insertBranchForTarget,
       setLineSelection,
       addClamp,
+      addCap,
       clearMultiSelection,
       select,
       setTool,
@@ -1306,12 +1320,17 @@ export function PdfCanvas() {
           const tol = lineHitTolerance(target.line.dimension, scale.metersPerPixel, invScale);
           const endpointHit = endpointHitOf(target.line, target.x, target.y, tol);
           const shapeMismatch = isRectDim(target.line.dimension) !== isRectDim(branchDim);
+          // En BLENDET ende tilbyr aldri vanlig fortsettelse/skjøt, uansett underkategori
+          // – man må fjerne blendingen først. Et nytt rør/kanal som treffer den skal i
+          // stedet behandles som et midt-på-kroppen-treff (T-kanal/påstikk-valg).
+          const capped = !!endpointHit && isCapped(target.line.id, endpointHit === 'start');
           // «Fortsett røret»-tolkningen gir bare mening som det ALLER FØRSTE punktet i
           // en ny strekning – man kan ikke «fortsette» et rør midt i en tegning man
           // allerede er i gang med.
           if (
             draftPoints.length === 0 &&
             endpointHit &&
+            !capped &&
             target.line.subId === activeSubId &&
             !shapeMismatch
           ) {
@@ -1328,15 +1347,15 @@ export function PdfCanvas() {
           // endepunkt-skjøten og midt-på-kroppen-avgreiningen under, ikke «fortsett»-
           // sporet over (som allerede krever samme subId).
           const doConnect = () => {
-            if (endpointHit) {
+            if (endpointHit && !capped) {
               // Endepunkt-mot-endepunkt (men ikke en gyldig «fortsett»-match over) er en
               // vanlig skjøt/bend, IKKE en avgreining – samme regel som
               // connectLandedEndpoints bruker etter Flytt/Kopier. Snapp til punktet uten
               // å sette inn noe.
               setDraftPoints((prev) => [...prev, target.x, target.y]);
             } else {
-              // Midt-på-kroppen-treff: snapp direkte til treffpunktet og sett inn
-              // avgreiningsdel, uansett hvor i strekningen vi er.
+              // Midt-på-kroppen-treff (eller en blendet ende, behandlet likt): snapp
+              // direkte til treffpunktet og sett inn avgreiningsdel/påstikk-valg.
               const point = insertBranchForTarget(target, branchDim);
               setDraftPoints((prev) => [...prev, point.x, point.y]);
             }
@@ -1640,6 +1659,7 @@ export function PdfCanvas() {
       commitTransform,
       splitLineAt,
       setPendingSystemMix,
+      isCapped,
       trimBoundaryId,
       trimLineTo,
       moveLineVertex,
@@ -2122,12 +2142,21 @@ export function PdfCanvas() {
   const visibleLines = lines.filter((l) => l.page === currentPage && !isSubHidden(l.subId));
   // Pluss-håndtaket på åpne ender må traversere ALLE sidens linjer (ikke visibleLines)
   // – ellers ville det å skjule en underkategori fått skjøtene til den til å se åpne ut.
+  // Er denne enden av linja blendet (endelokk)? Rent oppslag – ingen egen x/y lagres på
+  // DuctCapEntity, den er alltid akkurat linjas eget gjeldende start-/sluttpunkt.
   const selectedOpenEnds = useMemo(() => {
     if (selectedKind !== 'line' || !selectedId) return null;
     const pageLines = lines.filter((l) => l.page === currentPage);
     const pageBranches = branches.filter((b) => b.page === currentPage);
-    return openEndsOf(pageLines, selectedId, pageBranches);
-  }, [selectedKind, selectedId, lines, branches, currentPage]);
+    const raw = openEndsOf(pageLines, selectedId, pageBranches);
+    // En blendet ende skal ALDRI vise pluss-håndtaket for fortsettelse (C3) – man må
+    // fjerne blendingen først. Topologisk er enden fortsatt «åpen» (degree<2), så
+    // openEndsOf selv skal ikke endres; filtreringen hører hjemme her, kun for visning.
+    return [raw[0] && !isCapped(selectedId, true), raw[1] && !isCapped(selectedId, false)] as [
+      boolean,
+      boolean,
+    ];
+  }, [selectedKind, selectedId, lines, branches, currentPage, isCapped]);
   // Knekkpunkt-håndtakene (vertex-drag, C5a) og bend-/overgangs-/avgreiningsmarkørene
   // sitter alltid i NØYAKTIG samme punkt (en bend/overgang ER en delt linje-endepunkt,
   // og en avgreinings-arms endepunkt ER selve avgreiningspunktet) – markørene rendres
@@ -2263,6 +2292,9 @@ export function PdfCanvas() {
   const pageTransitions = transitions.filter((t) => t.page === currentPage && !isSubHidden(t.subId));
   const pageBranches = branches.filter((b) => b.page === currentPage && !isSubHidden(b.subId));
   const pageBends = bends.filter((b) => b.page === currentPage && !isSubHidden(b.subId));
+  const pageCaps = caps.filter(
+    (c) => c.page === currentPage && !isSubHidden(lines.find((l) => l.id === c.lineId)?.subId ?? ''),
+  );
   // Alle sidens linjer (ikke visibleLines) – en bend sitt plusstegn skal kunne finne
   // begge sine naboer for å regne ut hvor «hjørnet» peker, uansett skjulte kategorier.
   const pageLinesForBends = lines.filter((l) => l.page === currentPage);
@@ -2818,6 +2850,22 @@ export function PdfCanvas() {
               onConvertToTee={() => convertBendToTee(b)}
             />
           ))}
+          {pageCaps.map((c) => {
+            const line = lines.find((l) => l.id === c.lineId);
+            if (!line) return null; // linja er slettet – ingen gyldig posisjon å tegne fra
+            return (
+              <CapMarker
+                key={c.id}
+                cap={c}
+                line={line}
+                invScale={invScale}
+                metersPerPixel={scale.metersPerPixel}
+                selected={c.id === selectedId || multiSelection.has(c.id)}
+                interactive={tool === 'select'}
+                onSelect={() => select(c.id, 'cap')}
+              />
+            );
+          })}
           {pageAnnotations.map((note) => (
             <AnnotationNode
               key={note.id}
@@ -3915,6 +3963,55 @@ function BendMarker({
           />
         </Group>
       )}
+    </Group>
+  );
+}
+
+// ── Blending (endelokk) på en åpen kanalende ────────────────────────────────
+/** Ingen egne x/y lagres på DuctCapEntity – posisjon og vinkel avledes alltid fra
+ * linjas GJELDENDE endepunkt, så den følger automatisk med et endepunkt-drag
+ * (moveLineVertex) uten noe eget flytte-arbeid. Tegnes som en kort tverrgående strek
+ * rett over kanalåpningen – samme flate-endelokk-idiom man ser i ekte VVS-tegninger. */
+function CapMarker({
+  cap,
+  line,
+  invScale,
+  metersPerPixel,
+  selected,
+  interactive,
+  onSelect,
+}: {
+  cap: DuctCapEntity;
+  line: LineEntity;
+  invScale: number;
+  metersPerPixel: number | null;
+  selected: boolean;
+  interactive: boolean;
+  onSelect: () => void;
+}) {
+  const n = line.points.length;
+  const x = cap.fromStart ? line.points[0] : line.points[n - 2];
+  const y = cap.fromStart ? line.points[1] : line.points[n - 1];
+  const adjX = cap.fromStart ? line.points[2] : line.points[n - 4];
+  const adjY = cap.fromStart ? line.points[3] : line.points[n - 3];
+  const angleDeg = (Math.atan2(y - adjY, x - adjX) * 180) / Math.PI;
+  const dimMm = dimensionDiameterMm(line.dimension);
+  const halfW = Math.max(mmToPx(dimMm, metersPerPixel), 5 * invScale) / 2 + 2 * invScale;
+  return (
+    <Group x={x} y={y} rotation={angleDeg}>
+      {selected && (
+        <Circle radius={halfW + 5 * invScale} stroke="#f5a623" strokeWidth={2 * invScale} listening={false} />
+      )}
+      <Line points={[0, -halfW, 0, halfW]} stroke="#6d4c41" strokeWidth={3 * invScale} lineCap="round" listening={false} />
+      <Circle
+        radius={7 * invScale}
+        opacity={0}
+        listening={interactive}
+        onMouseDown={(e) => {
+          e.cancelBubble = true;
+          onSelect();
+        }}
+      />
     </Group>
   );
 }

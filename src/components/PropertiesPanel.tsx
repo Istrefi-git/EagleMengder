@@ -30,6 +30,7 @@ export function PropertiesPanel() {
   const annotations = useStore((s) => s.annotations);
   const tags = useStore((s) => s.tags);
   const clamps = useStore((s) => s.clamps);
+  const caps = useStore((s) => s.caps);
   const measurements = useStore((s) => s.measurements);
   const updateAnnotation = useStore((s) => s.updateAnnotation);
   const scale = useStore((s) => s.scale);
@@ -501,6 +502,31 @@ export function PropertiesPanel() {
         <button className="btn danger full" onClick={deleteSelected}>
           <Trash2 size={15} />
           Slett klammer
+        </button>
+      </section>
+    );
+  }
+
+  if (selectedKind === 'cap') {
+    const cap = caps.find((c) => c.id === selectedId);
+    if (!cap) return null;
+    const line = lines.find((l) => l.id === cap.lineId);
+    return (
+      <section className="properties-panel">
+        <div className="panel-header">
+          <h3>Egenskaper – Blending</h3>
+        </div>
+        <div className="field readonly">
+          <span>Blender enden på</span>
+          <strong>{line ? `${SUBCATEGORIES[line.subId]?.label ?? line.subId}` : 'Slettet kanal'}</strong>
+        </div>
+        <p className="muted">
+          Så lenge denne blendingen står kan man ikke tegne videre fra denne enden. Slett
+          blendingen for å åpne den igjen.
+        </p>
+        <button className="btn danger full" onClick={deleteSelected}>
+          <Trash2 size={15} />
+          Fjern blending
         </button>
       </section>
     );

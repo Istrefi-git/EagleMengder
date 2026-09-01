@@ -6,6 +6,7 @@ import type {
   BranchEntity,
   BranchFittingType,
   ClampEntity,
+  DuctCapEntity,
   CustomComponentDef,
   LineEntity,
   MeasurementEntity,
@@ -224,7 +225,13 @@ function pruneOrphanFittings(
 
   const keepBranch = (b: BranchEntity): boolean => {
     if (b.page !== page) return true;
-    if (endpointDegree(pageLines, b.x, b.y) === 0) return false;
+    const deg = endpointDegree(pageLines, b.x, b.y);
+    if (deg === 0) return false;
+    // Delt endepunkt mellom ≥2 linjer er en gyldig knute uansett – dekker den vanlige
+    // mid-på-kroppen-avgreiningen (arm-enden alene, deg==1, sjekkes under) OG T-rør/
+    // påstikk satt på en tidligere BLENDET ende (der selve avgreiningspunktet ER et av
+    // hovedlinjas egne endepunkter, som isInteriorOnBody eksplisitt ekskluderer).
+    if (deg >= 2) return true;
     return pageLines.some((l) => isInteriorOnBody(l, b.x, b.y, b.subId, b.material, mpp));
   };
 
@@ -760,6 +767,7 @@ export type SelectedKind =
   | 'bend'
   | 'tag'
   | 'clamp'
+  | 'cap'
   | 'measurement'
   | null;
 
@@ -805,6 +813,7 @@ export interface DrawSnapshot {
   annotations: AnnotationEntity[];
   tags: TagEntity[];
   clamps: ClampEntity[];
+  caps: DuctCapEntity[];
   measurements: MeasurementEntity[];
 }
 
@@ -1058,6 +1067,8 @@ interface AppState {
   /** Klammer (bæring) for rør/kanaler, med tilhørende gjengestag – auto-generert ved
    * tegning når «Klammer/gjengestag»-innstillingen er på, kan flyttes/slettes manuelt */
   clamps: ClampEntity[];
+  /** Blending (endelokk) på åpne kanalender – se DuctCapEntity. */
+  caps: DuctCapEntity[];
   /** Frittstående mål (punkt-til-punkt avstand / rom-areal) – påvirker ikke mengdelisten */
   measurements: MeasurementEntity[];
 
@@ -1340,6 +1351,10 @@ interface AppState {
   updateClampPosition: (id: string, x: number, y: number) => void;
   /** Flytter valgt klammer med (dx,dy) via piltastene. */
   nudgeClamp: (id: string, dx: number, dy: number, recordAsNewStep: boolean) => void;
+  /** Blender (setter endelokk på) en åpen kanalende – høyreklikk-menyen på pluss-
+   * håndtaket for en åpen ende (se CanvasMenuTarget). Nekter stille hvis enden allerede
+   * er blendet (kan skje ved en rask dobbel-kommando), i stedet for å lage en duplikat. */
+  addCap: (lineId: string, fromStart: boolean) => void;
   addMeasurement: (type: MeasurementType, points: number[]) => void;
   /** Flytter valgt(e) linje(r) med (dx,dy) – flytter automatisk med hele den
    * sammenhengende rør-/kanalstrekningen (delte endepunkter), samt tilhørende
@@ -1426,6 +1441,7 @@ export interface TilbudSnapshot {
   annotations: AnnotationEntity[];
   tags: TagEntity[];
   clamps: ClampEntity[];
+  caps: DuctCapEntity[];
   measurements: MeasurementEntity[];
   scale: ScaleState;
   lineConfig: Record<string, { material: string; dimension: string }>;
@@ -1460,6 +1476,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: s.annotations,
       tags: s.tags,
       clamps: s.clamps,
+      caps: s.caps,
       measurements: s.measurements,
     };
     set((st) => ({
@@ -1490,6 +1507,7 @@ export const useStore = create<AppState>((set, get) => {
   annotations: [],
   tags: [],
   clamps: [],
+  caps: [],
   measurements: [],
 
   tool: 'select',
@@ -2179,6 +2197,19 @@ export const useStore = create<AppState>((set, get) => {
     }));
   },
 
+  addCap: (lineId, fromStart) => {
+    const s0 = get();
+    if (s0.caps.some((c) => c.lineId === lineId && c.fromStart === fromStart)) return;
+    recordHistory();
+    const cap: DuctCapEntity = {
+      id: nextId('cap'),
+      page: s0.currentPage,
+      lineId,
+      fromStart,
+    };
+    set((s) => ({ caps: [...s.caps, cap], selectedId: cap.id, selectedKind: 'cap' }));
+  },
+
   addMeasurement: (type, points) => {
     recordHistory();
     const measurement: MeasurementEntity = {
@@ -2316,6 +2347,8 @@ export const useStore = create<AppState>((set, get) => {
       set((s) => ({ tags: s.tags.filter((t) => t.id !== selectedId) }));
     } else if (selectedKind === 'clamp') {
       set((s) => ({ clamps: s.clamps.filter((c) => c.id !== selectedId) }));
+    } else if (selectedKind === 'cap') {
+      set((s) => ({ caps: s.caps.filter((c) => c.id !== selectedId) }));
     } else if (selectedKind === 'measurement') {
       set((s) => ({ measurements: s.measurements.filter((m) => m.id !== selectedId) }));
     }
@@ -2333,6 +2366,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: [],
       tags: [],
       clamps: [],
+      caps: [],
       measurements: [],
       selectedId: null,
       selectedKind: null,
@@ -2358,6 +2392,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: s.annotations,
       tags: s.tags,
       clamps: s.clamps,
+      caps: s.caps,
       measurements: s.measurements,
     };
     set({
@@ -2382,6 +2417,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: s.annotations,
       tags: s.tags,
       clamps: s.clamps,
+      caps: s.caps,
       measurements: s.measurements,
     };
     set({
@@ -2431,6 +2467,7 @@ export const useStore = create<AppState>((set, get) => {
         annotations: s.annotations.filter((a) => !idSet.has(a.id)),
         tags: s.tags.filter((t) => !idSet.has(t.id)),
         clamps: s.clamps.filter((c) => !idSet.has(c.id)),
+        caps: s.caps.filter((c) => !idSet.has(c.id)),
         measurements: s.measurements.filter((m) => !idSet.has(m.id)),
         multiSelection: new Set<string>(),
       };
@@ -2655,6 +2692,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: s.annotations,
       tags: s.tags,
       clamps: s.clamps,
+      caps: s.caps,
       measurements: s.measurements,
       scale: s.scale,
       lineConfig: s.lineConfig,
@@ -2676,6 +2714,7 @@ export const useStore = create<AppState>((set, get) => {
         annotations: [],
         tags: [],
         clamps: [],
+        caps: [],
         measurements: [],
         scale: initialScale,
         autoDetected: null,
@@ -2700,6 +2739,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: snapshot.annotations ?? [],
       tags: snapshot.tags ?? [],
       clamps: snapshot.clamps ?? [],
+      caps: snapshot.caps ?? [],
       measurements: snapshot.measurements ?? [],
       scale: snapshot.scale,
       // Globale standarder som bunn, tilbudets egne valg oppå – tegningens
@@ -2736,6 +2776,7 @@ export const useStore = create<AppState>((set, get) => {
       annotations: [],
       tags: [],
       clamps: [],
+      caps: [],
       measurements: [],
       tool: 'select',
       selectedId: null,

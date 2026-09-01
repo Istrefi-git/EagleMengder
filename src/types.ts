@@ -325,6 +325,21 @@ export interface ClampEntity {
   rodLengthMm?: number;
 }
 
+/** Blending (endelokk) på en åpen kanalende – satt via høyreklikk-menyen på pluss-
+ * håndtaket for en åpen ende. Kun kanaler (rør blendes ikke i denne omgangen). Referert
+ * via `lineId` + `fromStart` (ikke lagrede x/y-koordinater), slik at den automatisk
+ * følger linja om endepunktet flyttes (moveLineVertex) uten noe eget flytte-arbeid –
+ * posisjon/vinkel avledes alltid fra selve linjas GJELDENDE geometri ved rendring/bruk.
+ * Så lenge en ende er blendet skal den ikke tilby vanlig fortsettelse (pluss-håndtaket i
+ * C3); et nytt rør/kanal som treffer punktet skal i stedet tilby T-kanal/påstikk, akkurat
+ * som et vanlig midt-på-kroppen-treff. */
+export interface DuctCapEntity {
+  id: string;
+  page: number;
+  lineId: string;
+  fromStart: boolean;
+}
+
 /** Standard klammeravstand (mm) – kanal hver 2400 mm, rør hver 1500 mm. Konfigurerbart
  * i Innstillinger (se store.ts: clampSpacing). */
 export const DEFAULT_CLAMP_SPACING: Record<'pipe' | 'duct', number> = {
