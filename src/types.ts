@@ -120,6 +120,7 @@ export type ToolMode =
   | 'move'
   | 'copy'
   | 'split'
+  | 'trimextend'
   | `line:${string}` // line:<underkategori-id>
   | `symbol:${SymbolType}`
   | `annotation:${AnnotationType}`

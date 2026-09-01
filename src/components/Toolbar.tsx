@@ -28,6 +28,7 @@ import {
   Ruler,
   Scissors,
   Settings2,
+  Slice,
   Square,
   Tag as TagIcon,
   TextCursorInput,
@@ -192,6 +193,12 @@ export function Toolbar() {
           label="Del"
           icon={Scissors}
           title="Del (D) – klikk på et tegnet rør/kanal for å dele det i to der du klikker."
+        />
+        <ToolButton
+          mode="trimextend"
+          label="Trim/Forleng"
+          icon={Slice}
+          title="Trim/Forleng (T) – klikk en grense, klikk deretter røret/kanalen som skal kuttes ved eller strekkes til den. Grensen blir stående armert til Escape."
         />
       </div>
 

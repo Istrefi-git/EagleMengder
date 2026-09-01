@@ -47,6 +47,8 @@ import {
   distance,
   flattenDuctRun,
   groupDuctRuns,
+  lineIntersect,
+  paramAlongSegment,
   polygonArea,
   polygonCentroid,
   polylineBendAngles,
@@ -161,6 +163,7 @@ export function PdfCanvas() {
   const setTool = useStore((s) => s.setTool);
   const clearSelection = useStore((s) => s.clearSelection);
   const moveLineVertex = useStore((s) => s.moveLineVertex);
+  const trimLineTo = useStore((s) => s.trimLineTo);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
@@ -204,6 +207,9 @@ export function PdfCanvas() {
   const [rubberBand, setRubberBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
   );
+  // Trim/Forleng (C6): klikk 1 armerer grensen (holdes armert til Escape eller
+  // verktøybytte, slik at flere segmenter kan trimmes/forlenges mot samme grense).
+  const [trimBoundaryId, setTrimBoundaryId] = useState<string | null>(null);
   // Klikk+dra-definisjon av en ny sky-annotasjon (rektangel, à la gummibånd)
   const [cloudDraft, setCloudDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
@@ -224,7 +230,7 @@ export function PdfCanvas() {
     line: LineEntity;
     x: number;
     y: number;
-    kind: 'continue' | 'branch' | 'mount' | 'split';
+    kind: 'continue' | 'branch' | 'mount' | 'split' | 'trim-boundary' | 'trim' | 'extend';
   } | null>(null);
   // Snap-indikator for måleverktøyene (avstand/areal) – hvilken type punkt musepekeren
   // akkurat nå er snappet til, kun til visning (selve punktet som brukes er `cursor`).
@@ -395,6 +401,13 @@ export function PdfCanvas() {
         setCanvasMenu(null);
         return;
       }
+      // Samme «ett Escape av gangen»-prinsipp som kontekstmenyen over: med en armert
+      // grense tømmer det første Escape-trykket KUN grensen (så man kan velge en annen
+      // uten å miste hele verktøyet); trykk Escape igjen for å gå til «Velg».
+      if (e.key === 'Escape' && tool === 'trimextend' && trimBoundaryId) {
+        setTrimBoundaryId(null);
+        return;
+      }
       if (e.key === 'Escape') {
         // Midt i en flytte-/kopier-gest (basispunkt satt): avbryt KUN gesten og behold
         // utvalget/verktøyet, slik at man kan prøve et nytt basispunkt med det samme.
@@ -426,7 +439,8 @@ export function PdfCanvas() {
           tool === 'calibrate' ||
           tool === 'move' ||
           tool === 'copy' ||
-          tool === 'split';
+          tool === 'split' ||
+          tool === 'trimextend';
         if (inDrawingTool) {
           setTool('select');
         } else {
@@ -502,16 +516,18 @@ export function PdfCanvas() {
         !e.metaKey &&
         !e.altKey &&
         !e.repeat &&
-        ['v', 'f', 'c', 'd', 'a', 'r', 'k'].includes(e.key.toLowerCase())
+        ['v', 'f', 'c', 'd', 'a', 'r', 'k', 't'].includes(e.key.toLowerCase())
       ) {
         // Ett-tasts hurtigtaster (norske mnemonikker): V velg, F flytt, C kopier,
-        // D del, A avstand, R rør, K kanal. R/K armerer sist brukte type av den
-        // arten – trykkes de igjen sykles det gjennom «sist brukt».
+        // D del, A avstand, R rør, K kanal, T trim/forleng (fri, matcher Revits TR).
+        // R/K armerer sist brukte type av den arten – trykkes de igjen sykles det
+        // gjennom «sist brukt».
         const k = e.key.toLowerCase();
         if (k === 'v') { e.preventDefault(); setTool('select'); }
         else if (k === 'f') { e.preventDefault(); setTool('move'); }
         else if (k === 'c') { e.preventDefault(); setTool('copy'); }
         else if (k === 'd') { e.preventDefault(); setTool('split'); }
+        else if (k === 't') { e.preventDefault(); setTool('trimextend'); }
         else if (k === 'a') { e.preventDefault(); setTool('measure:distance'); }
         else if (k === 'r' || k === 'k') {
           e.preventDefault();
@@ -605,6 +621,8 @@ export function PdfCanvas() {
     setContinuationAnchor,
     canvasMenu,
     setCanvasMenu,
+    trimBoundaryId,
+    setTrimBoundaryId,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -684,6 +702,7 @@ export function PdfCanvas() {
   // Avbryt pågående tegning når verktøy byttes, og forbered ny tegnesesjon
   useEffect(() => {
     setCanvasMenu(null);
+    setTrimBoundaryId(null);
     setCalibPoints([]);
     setCursor(null);
     setHoverSnap(null);
@@ -1418,6 +1437,61 @@ export function PdfCanvas() {
         if (best) splitLineAt(best.lineId, best.x, best.y, 'a');
         return;
       }
+      if (tool === 'trimextend') {
+        // Klikk 1: velg grensen. Klikk 2: velg målet + siden (P) man klikket på.
+        const hit = findNearestLine(
+          lines.filter((l) => l.page === currentPage),
+          p,
+          scale.metersPerPixel,
+          invScale,
+        );
+        if (!hit) return;
+        if (!trimBoundaryId) {
+          setTrimBoundaryId(hit.line.id);
+          return;
+        }
+        if (hit.line.id === trimBoundaryId) return; // samme linje som grensen – ignorer
+        const boundary = lines.find((l) => l.id === trimBoundaryId && l.page === currentPage);
+        if (!boundary) {
+          // Grensen ble slettet e.l. i mellomtiden – behandle dette klikket som et
+          // nytt forsøk på å velge grense i stedet for å feile stille.
+          setTrimBoundaryId(hit.line.id);
+          return;
+        }
+        const target = hit.line;
+        const bn = boundary.points.length;
+        const bStart = { x: boundary.points[0], y: boundary.points[1] };
+        const bEnd = { x: boundary.points[bn - 2], y: boundary.points[bn - 1] };
+        const bDir = { x: bEnd.x - bStart.x, y: bEnd.y - bStart.y };
+        const tn = target.points.length;
+        const tStart = { x: target.points[0], y: target.points[1] };
+        const tEnd = { x: target.points[tn - 2], y: target.points[tn - 1] };
+        const tDir = { x: tEnd.x - tStart.x, y: tEnd.y - tStart.y };
+        const X = lineIntersect(bStart, bDir, tStart, tDir);
+        if (!X) {
+          setError('Grensen og målet er parallelle – kan ikke trimme/forlenge dit.');
+          return; // grensen forblir armert – prøv et annet mål
+        }
+        const tX = paramAlongSegment(tStart, tEnd, X);
+        beginHistoryBatch();
+        try {
+          if (tX > 0 && tX < 1) {
+            // TRIM: grensen krysser målet MELLOM endepunktene – halvdelen med
+            // klikkpunktet (P, projisert på senterlinja av findNearestLine) forsvinner.
+            const tP = paramAlongSegment(tStart, tEnd, { x: hit.x, y: hit.y });
+            trimLineTo(target.id, tP < tX ? 'end' : 'start', X.x, X.y);
+          } else {
+            // FORLENG: skjæringen ligger UTENFOR målets egne to endepunkter – flytt
+            // enden nærmest dit via moveLineVertex, som arver skjøt-/bend-håndtering.
+            moveLineVertex(target.id, tX <= 0 ? 0 : tn - 2, X.x, X.y, {});
+          }
+        } finally {
+          endHistoryBatch();
+        }
+        // Grensen forblir armert (AutoCAD/Revit-konvensjon) – flere segmenter kan
+        // trimmes/forlenges mot samme grense uten å velge den på nytt.
+        return;
+      }
       if (isMeasureTool && measureType) {
         // Rektangulær arealmåling: klikk-flytt-klikk (hybrid med dra). Andre klikk fullfører.
         if (measureType === 'area' && areaMeasureMode === 'rect') {
@@ -1514,6 +1588,12 @@ export function PdfCanvas() {
       transformBase,
       commitTransform,
       splitLineAt,
+      trimBoundaryId,
+      trimLineTo,
+      moveLineVertex,
+      beginHistoryBatch,
+      endHistoryBatch,
+      setError,
     ],
   );
 
@@ -1647,6 +1727,41 @@ export function PdfCanvas() {
           }
         }
         setHoverSnap(best ? { line: best.line, x: best.x, y: best.y, kind: 'split' } : null);
+      } else if (tool === 'trimextend') {
+        const candidate = findNearestLine(
+          lines.filter((l) => l.page === currentPage && l.id !== trimBoundaryId),
+          p,
+          scale.metersPerPixel,
+          invScale,
+        );
+        if (!candidate) {
+          setHoverSnap(null);
+        } else if (!trimBoundaryId) {
+          setHoverSnap({ line: candidate.line, x: candidate.x, y: candidate.y, kind: 'trim-boundary' });
+        } else {
+          const boundary = lines.find((l) => l.id === trimBoundaryId && l.page === currentPage);
+          const target = candidate.line;
+          const bn = boundary?.points.length ?? 0;
+          const tn = target.points.length;
+          const X = boundary
+            ? lineIntersect(
+                { x: boundary.points[0], y: boundary.points[1] },
+                { x: boundary.points[bn - 2] - boundary.points[0], y: boundary.points[bn - 1] - boundary.points[1] },
+                { x: target.points[0], y: target.points[1] },
+                { x: target.points[tn - 2] - target.points[0], y: target.points[tn - 1] - target.points[1] },
+              )
+            : null;
+          if (!X) {
+            setHoverSnap(null);
+          } else {
+            const tX = paramAlongSegment(
+              { x: target.points[0], y: target.points[1] },
+              { x: target.points[tn - 2], y: target.points[tn - 1] },
+              X,
+            );
+            setHoverSnap({ line: target, x: X.x, y: X.y, kind: tX > 0 && tX < 1 ? 'trim' : 'extend' });
+          }
+        }
       } else {
         setHoverSnap(null);
       }
@@ -1677,6 +1792,7 @@ export function PdfCanvas() {
       currentPage,
       isTransformTool,
       transformBase,
+      trimBoundaryId,
     ],
   );
 
@@ -1924,7 +2040,8 @@ export function PdfCanvas() {
             isAnnotationTool ||
             isMeasureTool ||
             tool === 'calibrate' ||
-            tool === 'split'
+            tool === 'split' ||
+            tool === 'trimextend'
           ? 'crosshair'
           : 'default';
 
@@ -2759,6 +2876,25 @@ export function PdfCanvas() {
               </Group>
             );
           })()}
+          {trimBoundaryId &&
+            (() => {
+              const boundary = lines.find((l) => l.id === trimBoundaryId && l.page === currentPage);
+              if (!boundary) return null;
+              // Grensen holder seg oransje/aksent-farget SÅ LENGE den er armert – ikke
+              // bare mens musepekeren akkurat nå henger over den – slik at man ser hvilken
+              // linje man traff, gjennom flere påfølgende trim/forleng-klikk mot samme grense.
+              return (
+                <Line
+                  points={boundary.points}
+                  stroke="#f5a623"
+                  strokeWidth={10 * invScale}
+                  opacity={0.35}
+                  lineCap="round"
+                  lineJoin="round"
+                  listening={false}
+                />
+              );
+            })()}
           {hoverSnap && (
             <>
               <Line
@@ -2781,7 +2917,13 @@ export function PdfCanvas() {
                         ? 'Ny avgreining'
                         : hoverSnap.kind === 'split'
                           ? 'Del her'
-                          : 'Monteres på kanal'
+                          : hoverSnap.kind === 'trim-boundary'
+                            ? 'Velg som grense'
+                            : hoverSnap.kind === 'trim'
+                              ? 'Trim her'
+                              : hoverSnap.kind === 'extend'
+                                ? 'Forleng hit'
+                                : 'Monteres på kanal'
                   }
                   fontSize={12 * invScale}
                   fill="#1f6fd1"

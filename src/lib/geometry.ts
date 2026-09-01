@@ -315,6 +315,23 @@ export interface DuctRunWalls {
   centerline: number[];
 }
 
+/** Rå (IKKE klippet til [0,1]) parameter for hvor `p` projiserer på segmentet p0→p1 –
+ * t<0 betyr før p0, t>1 betyr etter p1. Brukt av Trim/Forleng til å avgjøre om
+ * skjæringspunktet med grensen ligger PÅ selve målet (0<t<1 → trim) eller utenfor det
+ * (t≤0/t≥1 → forleng), i motsetning til closestPointOnPolyline som alltid klipper t til
+ * selve segmentet og derfor ikke kan skille disse to tilfellene fra hverandre. */
+export function paramAlongSegment(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p: { x: number; y: number },
+): number {
+  const dx = p1.x - p0.x;
+  const dy = p1.y - p0.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-9) return 0;
+  return ((p.x - p0.x) * dx + (p.y - p0.y) * dy) / lenSq;
+}
+
 /** Finner skjæringspunktet mellom to uendelige linjer p1+t*d1 og p2+s*d2 (null hvis parallelle). */
 export function lineIntersect(
   p1: { x: number; y: number },

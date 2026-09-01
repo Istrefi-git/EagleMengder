@@ -29,6 +29,11 @@ function getHint(tool: string): string | null {
   if (tool === 'move' || tool === 'copy')
     return 'Velg objekter · klikk et basispunkt · klikk der de skal havne · skriv et tall for eksakt avstand i mm · Shift låser vinkel';
   if (tool === 'split') return 'Klikk på et rør/en kanal for å dele det i to der du klikker';
+  if (tool === 'trimextend')
+    return (
+      'Klikk grensen først, deretter røret/kanalen som skal kuttes eller strekkes · ' +
+      'grensen blir stående til Esc · Esc igjen går til Velg'
+    );
   if (tool === 'tag') return 'Klikk på et rør, en kanal eller en komponent for å merke det';
   if (tool === 'select')
     return (

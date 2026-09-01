@@ -34,7 +34,7 @@ import {
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
-import { classifyBendAngle, closestPointOnPolyline, polylineBendAngles } from './lib/geometry';
+import { classifyBendAngle, closestPointOnPolyline, paramAlongSegment, polylineBendAngles } from './lib/geometry';
 import { dimensionDiameterMm } from './lib/dimension';
 import { mmToPx } from './lib/scale';
 
@@ -1221,6 +1221,13 @@ interface AppState {
    * frakobling. Kalles per frame under drag (billig, O(sidens linjer)); selve
    * historikk-batchingen gjøres av kalleren (onVertexDragStart/-End). */
   moveLineVertex: (lineId: string, vertexIndex: number, x: number, y: number, opts?: { detach?: boolean }) => void;
+  /** Trim/Forleng, trim-halvparten: flytter enden MOTSATT av `keep` til (x,y) – i
+   * motsetning til moveLineVertex strekkes IKKE naboer med, siden hensikten nettopp er
+   * å kutte bort stubben, ikke bevare den. Bend/overgang ved den forkastede enden
+   * fjernes etter samme regel som ved sletting (pruneOrphanFittings); klammer/tagger/
+   * montert utstyr som lå PÅ selve den forkastede stubben slettes (kan ikke reprojiseres
+   * – geometrien der er borte), mens de på den bevarte siden er upåvirket. */
+  trimLineTo: (lineId: string, keep: 'start' | 'end', x: number, y: number) => void;
   updateLineProps: (
     id: string,
     patch: Partial<Pick<LineEntity, 'subId' | 'material' | 'dimension' | 'systemId'>>,
@@ -1783,6 +1790,45 @@ export const useStore = create<AppState>((set, get) => {
   moveLineVertex: (lineId, vertexIndex, x, y, opts) => {
     recordHistory();
     set((s) => applyVertexMove(s, lineId, vertexIndex, x, y, opts));
+  },
+
+  trimLineTo: (lineId, keep, x, y) => {
+    recordHistory();
+    set((s) => {
+      const line = s.lines.find((l) => l.id === lineId && l.page === s.currentPage);
+      if (!line) return {};
+      const n = line.points.length;
+      // Original geometri (FØR kuttet) – trengs for å avgjøre hvilken side av
+      // kuttpunktet en gitt markør lå på, siden linjas points allerede endres under.
+      const p0 = { x: line.points[0], y: line.points[1] };
+      const p1 = { x: line.points[n - 2], y: line.points[n - 1] };
+
+      const pts = line.points.slice();
+      if (keep === 'start') {
+        pts[n - 2] = x;
+        pts[n - 1] = y;
+      } else {
+        pts[0] = x;
+        pts[1] = y;
+      }
+      const lines = s.lines.map((l) => (l.id === lineId ? { ...l, points: pts } : l));
+
+      const pruned = pruneOrphanFittings(lines, line.page, s.bends, s.transitions, s.branches, s.scale.metersPerPixel);
+
+      const tCut = paramAlongSegment(p0, p1, { x, y });
+      const isOnDiscardedStub = (px: number, py: number): boolean => {
+        const t = paramAlongSegment(p0, p1, { x: px, y: py });
+        return keep === 'start' ? t > tCut : t < tCut;
+      };
+
+      return {
+        ...pruned,
+        lines,
+        tags: s.tags.filter((t) => !(t.lineId === lineId && isOnDiscardedStub(t.x, t.y))),
+        clamps: s.clamps.filter((c) => !(c.lineId === lineId && isOnDiscardedStub(c.x, c.y))),
+        symbols: s.symbols.filter((sy) => !(sy.mountedLineId === lineId && isOnDiscardedStub(sy.x, sy.y))),
+      };
+    });
   },
 
   updateLineProps: (id, patch) => {
