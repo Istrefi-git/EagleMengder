@@ -2175,6 +2175,83 @@ export function PdfCanvas() {
     },
     [lines, currentPage, hiddenCategories, clearSelection, setMultiSelection],
   );
+  /** Gjør en bend om til en avgreining (T-rør/T-kanal) med en tredje arm klar til å
+   * tegnes videre – trigges av plusset på bendets hjørne. En bend forbinder alltid
+   * nøyaktig to linjer i sitt eget punkt; finn en av dem (begge har samme subId/
+   * material/dimension, siden en bend kun oppstår ved fortsettelse av SAMME rør/kanal)
+   * og bruk den som vertskap for den nye armen. I motsetning til «Ny avgrening» i
+   * kontekstmenyen (C2) – som ALLTID spør (Påstikk/T-kanal) – går denne rett på ekte
+   * T uten mellomstopp, siden hele poenget er å gjøre bendet om til nettopp en T; ved
+   * rund↔rektangulær mismatch finnes ikke T-kanal fysisk, samme fallback-regel som
+   * insertBranchForTarget bruker. Selve bend-badgen fjernes – punktet er nå en ekte
+   * forgreiningsnode, ikke lenger en ren 2-linje-bend. */
+  const convertBendToTee = useCallback(
+    (bend: BendEntity) => {
+      const pageLines = lines.filter((l) => l.page === currentPage);
+      const hostLine = pageLines.find((l) => {
+        const n = l.points.length;
+        return (
+          sharesPoint(l.points[0], l.points[1], bend.x, bend.y) ||
+          sharesPoint(l.points[n - 2], l.points[n - 1], bend.x, bend.y)
+        );
+      });
+      if (!hostLine) return;
+      const branchDim = lineConfig[hostLine.subId]?.dimension ?? hostLine.dimension;
+      const cp = closestPointOnPolyline(hostLine.points, { x: bend.x, y: bend.y });
+      const angleDeg = cp?.angleDeg ?? 0;
+      const kind = categoryOf(hostLine.subId)?.kind;
+
+      beginHistoryBatch();
+      try {
+        select(bend.id, 'bend');
+        deleteSelected();
+        if (kind === 'pipe') {
+          addBranch(
+            hostLine.subId,
+            hostLine.material,
+            hostLine.dimension,
+            branchDim,
+            defaultBranchFittingForPipe(hostLine.subId),
+            bend.x,
+            bend.y,
+            angleDeg,
+          );
+        } else if (kind === 'duct') {
+          const shapeMismatch = isRectDim(hostLine.dimension) !== isRectDim(branchDim);
+          addBranch(
+            hostLine.subId,
+            hostLine.material,
+            hostLine.dimension,
+            branchDim,
+            shapeMismatch ? 'saddle_tap' : 'tee_duct',
+            bend.x,
+            bend.y,
+            angleDeg,
+          );
+        }
+      } finally {
+        endHistoryBatch();
+      }
+
+      setLineSelection(hostLine.subId, hostLine.material, branchDim);
+      preserveDraftRef.current = true;
+      setDraftPoints([bend.x, bend.y]);
+      setContinuationAnchor(null);
+      setShowShiftTip(true);
+    },
+    [
+      lines,
+      currentPage,
+      lineConfig,
+      select,
+      deleteSelected,
+      addBranch,
+      beginHistoryBatch,
+      endHistoryBatch,
+      setLineSelection,
+    ],
+  );
+
   // Kanalstrekninger (kun kanaler, ikke rør) gruppert til sammenhengende «runs» for
   // veggtegning – se buildDuctRunWalls. Rendres i ett stykke per strekning slik at
   // veggene blir sammenhengende (avrundet bend, innsnevret overgang), i stedet for at
@@ -2186,6 +2263,9 @@ export function PdfCanvas() {
   const pageTransitions = transitions.filter((t) => t.page === currentPage && !isSubHidden(t.subId));
   const pageBranches = branches.filter((b) => b.page === currentPage && !isSubHidden(b.subId));
   const pageBends = bends.filter((b) => b.page === currentPage && !isSubHidden(b.subId));
+  // Alle sidens linjer (ikke visibleLines) – en bend sitt plusstegn skal kunne finne
+  // begge sine naboer for å regne ut hvor «hjørnet» peker, uansett skjulte kategorier.
+  const pageLinesForBends = lines.filter((l) => l.page === currentPage);
   const visibleSymbols = symbols.filter(
     (sy) => sy.page === currentPage && !(sy.mountedLineId && hiddenLineIds.has(sy.mountedLineId)),
   );
@@ -2733,7 +2813,9 @@ export function PdfCanvas() {
               invScale={invScale}
               selected={b.id === selectedId || multiSelection.has(b.id)}
               interactive={tool === 'select' && !sitsAtSelectedVertex(b.x, b.y)}
+              outwardDir={bendOutwardDir(pageLinesForBends, b.x, b.y)}
               onSelect={() => select(b.id, 'bend')}
+              onConvertToTee={() => convertBendToTee(b)}
             />
           ))}
           {pageAnnotations.map((note) => (
@@ -3290,6 +3372,35 @@ function segmentAngleDeg(points: number[]): number | null {
   return (deg + 360) % 360;
 }
 
+/** Retningen «ut av» en bends åpne hjørne – der plusset (konverter til T) tegnes. En
+ * bend forbinder alltid nøyaktig to linjer i deres delte endepunkt (b.x,b.y); hver
+ * linje bidrar sin egen «utover»-retning (bort fra bend-punktet, mot dens andre ende).
+ * Motsatt av SUMMEN av disse to enhetsvektorene peker inn i den åpne V-en mellom dem –
+ * naturlig sted for en tredje avstikker-arm. Ved en tilnærmet rett gjennomgang (180°,
+ * degenerert sum) brukes normalen på den ene retningen som reserveløsning. */
+function bendOutwardDir(pageLines: LineEntity[], bx: number, by: number): { x: number; y: number } {
+  const dirs: { x: number; y: number }[] = [];
+  for (const l of pageLines) {
+    const n = l.points.length;
+    if (sharesPoint(l.points[0], l.points[1], bx, by)) {
+      const dx = l.points[2] - bx;
+      const dy = l.points[3] - by;
+      const len = Math.hypot(dx, dy) || 1;
+      dirs.push({ x: dx / len, y: dy / len });
+    } else if (sharesPoint(l.points[n - 2], l.points[n - 1], bx, by)) {
+      const dx = l.points[n - 4] - bx;
+      const dy = l.points[n - 3] - by;
+      const len = Math.hypot(dx, dy) || 1;
+      dirs.push({ x: dx / len, y: dy / len });
+    }
+  }
+  if (dirs.length < 2) return { x: 0, y: -1 };
+  const sum = { x: dirs[0].x + dirs[1].x, y: dirs[0].y + dirs[1].y };
+  const sumLen = Math.hypot(sum.x, sum.y);
+  if (sumLen < 1e-6) return { x: -dirs[0].y, y: dirs[0].x };
+  return { x: -sum.x / sumLen, y: -sum.y / sumLen };
+}
+
 // ── Linje-node ─────────────────────────────────────────────────────────────
 interface LineNodeProps {
   line: LineEntity;
@@ -3716,17 +3827,29 @@ function BendMarker({
   invScale,
   selected,
   interactive,
+  outwardDir,
   onSelect,
+  onConvertToTee,
 }: {
   bend: BendEntity;
   invScale: number;
   selected: boolean;
   interactive: boolean;
+  /** Retning ut av bendets åpne hjørne (se bendOutwardDir) – der plusset tegnes. */
+  outwardDir: { x: number; y: number };
   onSelect: () => void;
+  /** Klikk på plusset – gjør bendet om til en avgreining (T-rør/T-kanal/påstikk) med en
+   * tredje arm rett-armert til å tegnes videre derfra. */
+  onConvertToTee: () => void;
 }) {
   // Bend-punktet vises nå som en jevn avrundet sving på selve kanalveggen (se
   // DuctRunSchematic) – prikk+gradtall er derfor bare synlig ved valg, for å slippe
   // unødvendig visuell støy på hvert eneste bend i en ferdig tegning.
+  const offset = 18 * invScale;
+  const plusX = outwardDir.x * offset;
+  const plusY = outwardDir.y * offset;
+  const plusR = 8 * invScale;
+  const plusArm = plusR * 0.5;
   return (
     <Group x={bend.x} y={bend.y}>
       {selected && (
@@ -3755,6 +3878,43 @@ function BendMarker({
           onSelect();
         }}
       />
+      {/* Pluss på hjørnet av en MERKET bend – klikk gjør den om til en avgreining (T),
+          samme visuelle idiom som pluss-håndtakene på åpne rør-/kanalender (C3). */}
+      {selected && interactive && (
+        <Group>
+          <Line
+            points={[0, 0, plusX, plusY]}
+            stroke="#14c08a"
+            strokeWidth={1.5 * invScale}
+            dash={[4 * invScale, 3 * invScale]}
+            listening={false}
+          />
+          <Circle
+            x={plusX}
+            y={plusY}
+            radius={plusR}
+            fill="#14c08a"
+            stroke="#fff"
+            strokeWidth={1.5 * invScale}
+            onMouseDown={(e) => {
+              e.cancelBubble = true;
+              onConvertToTee();
+            }}
+          />
+          <Line
+            points={[plusX - plusArm, plusY, plusX + plusArm, plusY]}
+            stroke="#fff"
+            strokeWidth={1.6 * invScale}
+            listening={false}
+          />
+          <Line
+            points={[plusX, plusY - plusArm, plusX, plusY + plusArm]}
+            stroke="#fff"
+            strokeWidth={1.6 * invScale}
+            listening={false}
+          />
+        </Group>
+      )}
     </Group>
   );
 }
