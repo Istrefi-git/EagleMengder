@@ -163,6 +163,8 @@ export function PdfCanvas() {
   const setTool = useStore((s) => s.setTool);
   const clearSelection = useStore((s) => s.clearSelection);
   const moveLineVertex = useStore((s) => s.moveLineVertex);
+  const hideShiftTip = useStore((s) => s.hideShiftTip);
+  const setHideShiftTip = useStore((s) => s.setHideShiftTip);
   const trimLineTo = useStore((s) => s.trimLineTo);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
@@ -2447,7 +2449,7 @@ export function PdfCanvas() {
         </div>
       )}
 
-      {showShiftTip && isLineTool && activeMaterial && (
+      {showShiftTip && !hideShiftTip && isLineTool && activeMaterial && (
         <div className="shift-tip">
           <Lightbulb size={15} className="shift-tip-icon" />
           <span className="shift-tip-text">
@@ -2455,6 +2457,15 @@ export function PdfCanvas() {
             ({activeBendAngles.map((a) => `${a}°`).join(', ')}). Hold <strong>Shift</strong> for å tegne fritt.
             Skriv et tall for eksakt lengde.
           </span>
+          <button
+            className="shift-tip-dismiss"
+            onClick={() => {
+              setHideShiftTip(true);
+              setShowShiftTip(false);
+            }}
+          >
+            Ikke vis igjen
+          </button>
           <button className="shift-tip-close" onClick={() => setShowShiftTip(false)}>
             <X size={14} />
           </button>

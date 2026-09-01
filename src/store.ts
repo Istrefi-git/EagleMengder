@@ -824,6 +824,8 @@ interface PersistedSettings {
   /** Skjul tekst-etiketter for komponenter (overganger/avgreininger) på lerretet. */
   hideComponentLabels: boolean;
   suppressOffLineWarning: boolean;
+  /** «Ikke vis igjen» for vinkellås-tipset som popper opp når man begynner å tegne. */
+  hideShiftTip: boolean;
   customSystems: string[];
   /** Egendefinerte dimensjoner lagt til per underkategori (f.eks. runde Ø-mål eller
    * rektangulære BxH-mål for kanaler som ikke finnes i standardsettet). */
@@ -872,6 +874,7 @@ function loadSettings(): PersistedSettings {
         typeof parsed.hideComponentLabels === 'boolean' ? parsed.hideComponentLabels : false,
       suppressOffLineWarning:
         typeof parsed.suppressOffLineWarning === 'boolean' ? parsed.suppressOffLineWarning : false,
+      hideShiftTip: typeof parsed.hideShiftTip === 'boolean' ? parsed.hideShiftTip : false,
       customSystems: Array.isArray(parsed.customSystems)
         ? parsed.customSystems.filter((c: unknown) => typeof c === 'string')
         : [],
@@ -967,6 +970,7 @@ function defaultSettings(): PersistedSettings {
     showAirflowArrows: true,
     hideComponentLabels: false,
     suppressOffLineWarning: false,
+    hideShiftTip: false,
     customSystems: [],
     customDimensions: {},
     customColors: {},
@@ -1002,6 +1006,7 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
     showAirflowArrows: s.showAirflowArrows,
     hideComponentLabels: s.hideComponentLabels,
     suppressOffLineWarning: s.suppressOffLineWarning,
+    hideShiftTip: s.hideShiftTip,
     customSystems: s.customSystems,
     customDimensions: s.customDimensions,
     customColors: s.customColors,
@@ -1134,6 +1139,10 @@ interface AppState {
   pendingOffLineSymbol: { type: SymbolType; x: number; y: number; systemId?: string } | null;
   /** Om bekreftelsesdialogen for utstyr-uten-kanal er slått av av brukeren */
   suppressOffLineWarning: boolean;
+  /** Om vinkellås-tipset (som popper opp når man begynner å tegne et rør/kanal) er
+   * slått av av brukeren – «Ikke vis igjen»-knappen i tipset selv. */
+  hideShiftTip: boolean;
+  setHideShiftTip: (hide: boolean) => void;
 
   // Visning (Konva stage-transform)
   view: ViewTransform;
@@ -1533,6 +1542,13 @@ export const useStore = create<AppState>((set, get) => {
   canvasMenu: null,
   pendingOffLineSymbol: null,
   suppressOffLineWarning: initialSettings.suppressOffLineWarning,
+  hideShiftTip: initialSettings.hideShiftTip,
+  setHideShiftTip: (hide) => {
+    set((s) => {
+      persistSettings(s, { hideShiftTip: hide });
+      return { hideShiftTip: hide };
+    });
+  },
 
   view: { scale: 1, x: 0, y: 0 },
   stageSize: { width: 800, height: 600 },

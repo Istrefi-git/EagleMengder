@@ -1232,6 +1232,21 @@ body {
   flex-shrink: 0;
   color: var(--accent);
 }
+.shift-tip-dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+.shift-tip-dismiss:hover {
+  color: var(--text);
+}
 .shift-tip-close {
   display: inline-flex;
   align-items: center;
