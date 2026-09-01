@@ -226,6 +226,17 @@ export function PdfCanvas() {
   const [polygonDraftPoints, setPolygonDraftPoints] = useState<number[]>([]);
   // Id til tekst-annotasjonen som redigeres inline akkurat nå (dobbeltklikk)
   const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null);
+  // Bekreftelse før to ULIKE underkategorier (f.eks. tilluft mot avtrekk) kobles sammen
+  // ved tegning – «Ja»/«Nei» er ren lukkings-logikk definert av kalleren (mousedown vs.
+  // finishLine trenger ulik commit-logikk), så pending-tilstanden bærer selve
+  // handlingene i stedet for en rigid datastruktur. Ren UI-tilstand – ikke i store-en.
+  const [pendingSystemMix, setPendingSystemMix] = useState<{
+    existingLabel: string;
+    newLabel: string;
+    noun: 'rør' | 'kanal';
+    onConfirm: () => void;
+    onCancel: () => void;
+  } | null>(null);
   // Forhåndsvisning av hva som skjer hvis man klikker nå (kun rør/kanal-/utstyrsverktøy):
   // fortsetter et eksisterende rør, setter inn en avgreining, eller monterer utstyr.
   const [hoverSnap, setHoverSnap] = useState<{
@@ -985,20 +996,6 @@ export function PdfCanvas() {
     setLineEntry(null);
   }, [lineEntry, scale.metersPerPixel, draftPoints, continuationAnchor, cursor]);
 
-  /** Setter inn en avgreiningsdel (eller ber bruker velge type for kanal) ved et punkt
-   * der en ny linje starter/ender på et eksisterende rør/kanal. */
-  const tryInsertBranch = useCallback(
-    (point: { x: number; y: number }, branchDimension: string): { x: number; y: number } => {
-      if (!activeSubId) return point;
-      const kind = categoryOf(activeSubId)?.kind;
-      if (!kind) return point;
-      const target = findBranchTarget(point, kind);
-      if (!target) return point;
-      return insertBranchForTarget(target, branchDimension);
-    },
-    [activeSubId, findBranchTarget, insertBranchForTarget],
-  );
-
   /** Snapper et målepunkt (avstand/areal-verktøy) til det mest relevante vektor-punktet i
    * nærheten – slik man er vant til fra PDF-redigeringsverktøy. Selve PDF-bakgrunnen er et
    * rasterbilde uten geometri vi kan lese ut, så snappingen bruker det vi faktisk HAR
@@ -1043,23 +1040,51 @@ export function PdfCanvas() {
   const finishLine = useCallback(() => {
     if (!isLineTool || !activeSubId) return;
     if (draftPoints.length >= 4) {
-      // Sjekk om linjen ender på et eksisterende rør/kanal av samme type → avgreining
+      // Sjekk om linjen ender på et eksisterende rør/kanal → avgreining. Samme
+      // system-blande-sjekk som mousedown-grenen: en annen underkategori enn den som
+      // tegnes krever bekreftelse før noe faktisk kobles sammen (se pendingSystemMix).
       const lastX = draftPoints[draftPoints.length - 2];
       const lastY = draftPoints[draftPoints.length - 1];
-      const snapped = tryInsertBranch({ x: lastX, y: lastY }, draftDimension ?? activeSub?.dimensions[0] ?? '');
+      const kind = categoryOf(activeSubId)?.kind;
+      const target = kind ? findBranchTarget({ x: lastX, y: lastY }, kind) : null;
+      const branchDim = draftDimension ?? activeSub?.dimensions[0] ?? '';
+
+      const commit = (finalPoints: number[]) => {
+        addLineRun(
+          activeSubId,
+          finalPoints,
+          activeMaterial,
+          draftDimension ?? undefined,
+          draftSystemId || undefined,
+          continuationAnchor ?? undefined,
+        );
+        setContinuationAnchor(null);
+        setDraftPoints([]);
+        setCursor(null);
+        setLineEntry(null);
+      };
+
+      if (target && target.line.subId !== activeSubId) {
+        setPendingSystemMix({
+          existingLabel: SUBCATEGORIES[target.line.subId]?.label ?? target.line.subId,
+          newLabel: activeSub?.label ?? activeSubId,
+          noun: kind === 'duct' ? 'kanal' : 'rør',
+          onConfirm: () => {
+            const point = insertBranchForTarget(target, branchDim);
+            commit([...draftPoints.slice(0, -2), point.x, point.y]);
+          },
+          onCancel: () => commit(draftPoints),
+        });
+        return;
+      }
+
+      const snapped = target ? insertBranchForTarget(target, branchDim) : { x: lastX, y: lastY };
       const finalPoints =
         snapped.x !== lastX || snapped.y !== lastY
           ? [...draftPoints.slice(0, -2), snapped.x, snapped.y]
           : draftPoints;
-      addLineRun(
-        activeSubId,
-        finalPoints,
-        activeMaterial,
-        draftDimension ?? undefined,
-        draftSystemId || undefined,
-        continuationAnchor ?? undefined,
-      );
-      setContinuationAnchor(null);
+      commit(finalPoints);
+      return;
     }
     setDraftPoints([]);
     setCursor(null);
@@ -1073,7 +1098,9 @@ export function PdfCanvas() {
     draftDimension,
     draftSystemId,
     activeSub,
-    tryInsertBranch,
+    findBranchTarget,
+    insertBranchForTarget,
+    setPendingSystemMix,
     continuationAnchor,
   ]);
 
@@ -1269,8 +1296,8 @@ export function PdfCanvas() {
         // punktet – ellers ville en angitt/låst retning kunne dytte klikket forbi en
         // kanal man tydelig prøvde å treffe. Gjelder alle klikk i en strekning, ikke
         // bare det første, slik at man også kan avslutte MIDT i en strekning oppå en
-        // annen kanal og få en avgreining der (se finishLine/tryInsertBranch for
-        // tilsvarende sjekk ved dobbeltklikk/Enter-avslutning).
+        // annen kanal og få en avgreining der (se finishLine for tilsvarende sjekk ved
+        // dobbeltklikk/Enter-avslutning).
         const kind = activeSubId ? categoryOf(activeSubId)?.kind : undefined;
         const target = activeSubId && kind ? findBranchTarget(p, kind) : null;
 
@@ -1294,20 +1321,42 @@ export function PdfCanvas() {
             setShowShiftTip(false);
             return;
           }
-          if (endpointHit) {
-            // Endepunkt-mot-endepunkt (men ikke en gyldig «fortsett»-match over) er en
-            // vanlig skjøt/bend, IKKE en avgreining – samme regel som
-            // connectLandedEndpoints bruker etter Flytt/Kopier. Snapp til punktet uten
-            // å sette inn noe.
-            setDraftPoints((prev) => [...prev, target.x, target.y]);
+          // Ulik underkategori (f.eks. tilluft mot avtrekk, eller varmt mot kaldt vann)
+          // enn den som tegnes akkurat nå = to ulike SYSTEMER. Kobler man dem sammen
+          // uten videre kunne det se ut som ett sammenhengende anlegg i mengdelisten når
+          // det egentlig er to – spør derfor før noe faktisk kobles. Gjelder både
+          // endepunkt-skjøten og midt-på-kroppen-avgreiningen under, ikke «fortsett»-
+          // sporet over (som allerede krever samme subId).
+          const doConnect = () => {
+            if (endpointHit) {
+              // Endepunkt-mot-endepunkt (men ikke en gyldig «fortsett»-match over) er en
+              // vanlig skjøt/bend, IKKE en avgreining – samme regel som
+              // connectLandedEndpoints bruker etter Flytt/Kopier. Snapp til punktet uten
+              // å sette inn noe.
+              setDraftPoints((prev) => [...prev, target.x, target.y]);
+            } else {
+              // Midt-på-kroppen-treff: snapp direkte til treffpunktet og sett inn
+              // avgreiningsdel, uansett hvor i strekningen vi er.
+              const point = insertBranchForTarget(target, branchDim);
+              setDraftPoints((prev) => [...prev, point.x, point.y]);
+            }
             setShowShiftTip(false);
+          };
+          if (target.line.subId !== activeSubId) {
+            const fallback = computeLinePoint(p, e.evt.shiftKey);
+            setPendingSystemMix({
+              existingLabel: SUBCATEGORIES[target.line.subId]?.label ?? target.line.subId,
+              newLabel: activeSub?.label ?? activeSubId ?? '',
+              noun: kind === 'duct' ? 'kanal' : 'rør',
+              onConfirm: doConnect,
+              onCancel: () => {
+                setDraftPoints((prev) => [...prev, fallback.x, fallback.y]);
+                setShowShiftTip(false);
+              },
+            });
             return;
           }
-          // Midt-på-kroppen-treff: snapp direkte til treffpunktet og sett inn
-          // avgreiningsdel, uansett hvor i strekningen vi er.
-          const point = insertBranchForTarget(target, branchDim);
-          setDraftPoints((prev) => [...prev, point.x, point.y]);
-          setShowShiftTip(false);
+          doConnect();
           return;
         }
 
@@ -1590,6 +1639,7 @@ export function PdfCanvas() {
       transformBase,
       commitTransform,
       splitLineAt,
+      setPendingSystemMix,
       trimBoundaryId,
       trimLineTo,
       moveLineVertex,
@@ -2492,6 +2542,50 @@ export function PdfCanvas() {
               Materiale: <strong>{activeMaterial}</strong>
             </span>
           )}
+        </div>
+      )}
+
+      {pendingSystemMix && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => {
+            pendingSystemMix.onCancel();
+            setPendingSystemMix(null);
+          }}
+        >
+          <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Blande systemer?</h2>
+            </div>
+            <div className="modal-body">
+              <p className="note">
+                Du kobler nå <strong>{pendingSystemMix.newLabel}</strong> til{' '}
+                <strong>{pendingSystemMix.existingLabel}</strong> – to ulike systemer. Vil du
+                koble dem sammen, eller tegne{' '}
+                {pendingSystemMix.noun === 'kanal' ? 'en helt egen kanal' : 'et helt eget rør'} her?
+              </p>
+              <div className="field row" style={{ justifyContent: 'flex-end' }}>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    pendingSystemMix.onCancel();
+                    setPendingSystemMix(null);
+                  }}
+                >
+                  {pendingSystemMix.noun === 'kanal' ? 'Nei, egen kanal' : 'Nei, eget rør'}
+                </button>
+                <button
+                  className="btn primary"
+                  onClick={() => {
+                    pendingSystemMix.onConfirm();
+                    setPendingSystemMix(null);
+                  }}
+                >
+                  Ja, koble sammen
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
