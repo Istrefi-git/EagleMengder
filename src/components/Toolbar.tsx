@@ -102,6 +102,27 @@ export function Toolbar() {
   // underkategoriene var det første av fire klikk før man fikk tegnet noe.
   const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>({});
   const toggleCat = (code: string) => setCollapsedCats((c) => ({ ...c, [code]: !c[code] }));
+  // Rør og kanaler i hver sin hovedgruppe, slik at man kan minimere ALLE rør-
+  // kategoriene i ett klikk når man f.eks. kun skal tegne ventilasjon (og omvendt).
+  // Starter begge åpne av samme grunn som collapsedCats over.
+  const [pipesOpen, setPipesOpen] = useState(true);
+  const [ductsOpen, setDuctsOpen] = useState(true);
+  const pipeCategories = CATEGORIES.filter((c) => c.kind === 'pipe');
+  const ductCategories = CATEGORIES.filter((c) => c.kind === 'duct');
+  const isGroupHidden = (kind: 'pipe' | 'duct') => {
+    const codes = (kind === 'pipe' ? pipeCategories : ductCategories).map((c) => c.code);
+    return codes.length > 0 && codes.every((code) => hiddenCategories.has(code));
+  };
+  /** Skjul/vis ALLE kategoriene i gruppa fra lerretet i ett klikk – speiler den
+   * enkelte kategoriens egen øye-knapp (cat-eye), bare for hele Rør/Kanaler-gruppa. */
+  const toggleGroupVisibility = (kind: 'pipe' | 'duct') => {
+    const codes = (kind === 'pipe' ? pipeCategories : ductCategories).map((c) => c.code);
+    const allHidden = isGroupHidden(kind);
+    for (const code of codes) {
+      const currentlyHidden = hiddenCategories.has(code);
+      if (allHidden ? currentlyHidden : !currentlyHidden) toggleCategoryVisibility(code);
+    }
+  };
   const [libraryOpen, setLibraryOpen] = useState(false);
   // «Tekst & skyer» og «Verktøy» kan minimeres på samme måte som komponentseksjonene –
   // starter åpne siden markup-/måleverktøyene brukes ofte.
@@ -230,69 +251,102 @@ export function Toolbar() {
         </div>
       )}
 
-      <div className="tool-section">
-        <span className="tool-heading" title="Hurtigtast R (rør) / K (kanal) armerer sist brukte type">
-          Rør &amp; kanaler
-        </span>
-        {CATEGORIES.map((cat) => {
-          const isOpen = !collapsedCats[cat.code];
-          const isHidden = hiddenCategories.has(cat.code);
-          return (
-            <div key={cat.code} className="cat-group">
-              <div className="cat-header">
-                <button
-                  className="cat-header-toggle"
-                  onClick={() => toggleCat(cat.code)}
-                  disabled={disabled}
-                  title={`${cat.code} ${cat.label}`}
-                >
-                  <span className={`cat-caret ${isOpen ? 'open' : ''}`}>
-                    <ChevronRight size={13} />
-                  </span>
-                  <span className="cat-code">{cat.code}</span>
-                  <span className="cat-label">{cat.label}</span>
-                  <span className={`cat-kind ${cat.kind}`}>{cat.kind === 'duct' ? 'kanal' : 'rør'}</span>
-                </button>
-                <button
-                  className={`cat-eye ${isHidden ? 'hidden-layer' : ''}`}
-                  onClick={() => toggleCategoryVisibility(cat.code)}
-                  disabled={disabled}
-                  title={isHidden ? 'Vis på lerretet' : 'Skjul fra lerretet'}
-                >
-                  {isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-              <div className={`collapse ${isOpen ? 'open' : ''}`}>
-                <div className="cat-subs">
-                  {cat.subs.map((sub) => (
-                    <SubPicker
-                      key={sub.id}
-                      sub={sub}
-                      dashed={cat.kind === 'duct'}
-                      disabled={disabled}
-                      isActiveTool={tool === `line:${sub.id}`}
-                      config={lineConfig[sub.id]}
-                      onActivate={() => activateSub(sub)}
-                      isOpen={openSubId === sub.id}
-                      pickingMaterial={openSubId === sub.id ? pickingMaterial : null}
-                      onToggle={() => toggleSub(sub.id)}
-                      onPickMaterial={setPickingMaterial}
-                      onPickDimension={(material, dimension) =>
-                        pickDimension(sub.id, material, dimension)
-                      }
-                      customDimensions={customDimensions[sub.id] ?? []}
-                      onAddCustomDimension={(dimension) => addCustomDimension(sub.id, dimension)}
-                      onRemoveCustomDimension={(dimension) => removeCustomDimension(sub.id, dimension)}
-                      color={colorFor(sub, customColors)}
-                      onSetColor={(color) => setCustomColor(sub.id, color)}
-                    />
-                  ))}
-                </div>
-              </div>
+      {([
+        { kind: 'pipe' as const, label: 'Rør', cats: pipeCategories, open: pipesOpen, setOpen: setPipesOpen },
+        { kind: 'duct' as const, label: 'Kanaler', cats: ductCategories, open: ductsOpen, setOpen: setDuctsOpen },
+      ] as const).map(({ kind, label, cats, open, setOpen }) => {
+        if (cats.length === 0) return null;
+        const groupHidden = isGroupHidden(kind);
+        return (
+          <div className="tool-section" key={kind}>
+            <div className="cat-header">
+              <button
+                className="cat-header-toggle group"
+                onClick={() => setOpen((o) => !o)}
+                disabled={disabled}
+                title={
+                  kind === 'pipe'
+                    ? 'Hurtigtast R armerer sist brukte rørtype'
+                    : 'Hurtigtast K armerer sist brukte kanaltype'
+                }
+              >
+                <span className={`cat-caret ${open ? 'open' : ''}`}>
+                  <ChevronRight size={13} />
+                </span>
+                <span className="cat-label">{label}</span>
+              </button>
+              <button
+                className={`cat-eye ${groupHidden ? 'hidden-layer' : ''}`}
+                onClick={() => toggleGroupVisibility(kind)}
+                disabled={disabled}
+                title={groupHidden ? `Vis alle ${label.toLowerCase()} på lerretet` : `Skjul alle ${label.toLowerCase()} fra lerretet`}
+              >
+                {groupHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
             </div>
-          );
-        })}
-      </div>
+            <div className={`collapse ${open ? 'open' : ''}`}>
+              {cats.map((cat) => {
+                const isOpen = !collapsedCats[cat.code];
+                const isHidden = hiddenCategories.has(cat.code);
+                return (
+                  <div key={cat.code} className="cat-group">
+                    <div className="cat-header">
+                      <button
+                        className="cat-header-toggle"
+                        onClick={() => toggleCat(cat.code)}
+                        disabled={disabled}
+                        title={`${cat.code} ${cat.label}`}
+                      >
+                        <span className={`cat-caret ${isOpen ? 'open' : ''}`}>
+                          <ChevronRight size={13} />
+                        </span>
+                        <span className="cat-code">{cat.code}</span>
+                        <span className="cat-label">{cat.label}</span>
+                        <span className={`cat-kind ${cat.kind}`}>{cat.kind === 'duct' ? 'kanal' : 'rør'}</span>
+                      </button>
+                      <button
+                        className={`cat-eye ${isHidden ? 'hidden-layer' : ''}`}
+                        onClick={() => toggleCategoryVisibility(cat.code)}
+                        disabled={disabled}
+                        title={isHidden ? 'Vis på lerretet' : 'Skjul fra lerretet'}
+                      >
+                        {isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    <div className={`collapse ${isOpen ? 'open' : ''}`}>
+                      <div className="cat-subs">
+                        {cat.subs.map((sub) => (
+                          <SubPicker
+                            key={sub.id}
+                            sub={sub}
+                            dashed={cat.kind === 'duct'}
+                            disabled={disabled}
+                            isActiveTool={tool === `line:${sub.id}`}
+                            config={lineConfig[sub.id]}
+                            onActivate={() => activateSub(sub)}
+                            isOpen={openSubId === sub.id}
+                            pickingMaterial={openSubId === sub.id ? pickingMaterial : null}
+                            onToggle={() => toggleSub(sub.id)}
+                            onPickMaterial={setPickingMaterial}
+                            onPickDimension={(material, dimension) =>
+                              pickDimension(sub.id, material, dimension)
+                            }
+                            customDimensions={customDimensions[sub.id] ?? []}
+                            onAddCustomDimension={(dimension) => addCustomDimension(sub.id, dimension)}
+                            onRemoveCustomDimension={(dimension) => removeCustomDimension(sub.id, dimension)}
+                            color={colorFor(sub, customColors)}
+                            onSetColor={(color) => setCustomColor(sub.id, color)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
 
       <div className="tool-section">
         <span className="tool-heading">Komponenter</span>

@@ -648,6 +648,15 @@ body {
   opacity: 0.35;
   cursor: not-allowed;
 }
+/* Hovedgruppe (Rør / Kanaler) – litt mer visuell vekt enn de nøstede
+   bygningsdel-kategoriene den folder ut, så nivåene er lette å skille fra hverandre. */
+.cat-header-toggle.group .cat-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-faint);
+  flex: initial;
+}
 .cat-eye {
   display: inline-flex;
   align-items: center;
