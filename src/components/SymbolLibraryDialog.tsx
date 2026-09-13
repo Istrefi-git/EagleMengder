@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Plus, Search, Trash2, X } from 'lucide-react';
 import { useStore } from '../store';
 import { BUILTIN_SYMBOL_GLYPH, SYMBOL_DEFS } from '../types';
-import type { BuiltInSymbolType } from '../types';
+import type { BuiltInSymbolType, SymbolDef } from '../types';
 import { SYMBOL_ICONS } from './Toolbar';
 import { GlyphPreview } from './GlyphPreview';
 import { CustomComponentDialog } from './CustomComponentDialog';
@@ -53,6 +53,12 @@ const LIBRARY_GROUPS: { label: string; types: BuiltInSymbolType[] }[] = [
 
 const CUSTOM_GROUP = '__custom';
 
+/** Rør/ventilasjon-filteret over kategorikolonnen – SymbolDef.kind finnes allerede på
+ * alle innebygde typer og på egendefinerte komponenter, denne dialogen brukte den
+ * bare aldri til noe før nå. */
+type KindFilter = 'all' | 'pipe' | 'duct';
+const KIND_FILTER_LABEL: Record<KindFilter, string> = { all: 'Alle', pipe: 'Rør', duct: 'Ventilasjon' };
+
 /** Søkbart, kategorisert symbolbibliotek – erstatter de to flate ikon-gridene
  * («Komponenter – Ventilasjon»/«Komponenter – Rør») som lå direkte i Toolbar.
  * Valg av symbol setter `tool` akkurat som før (`symbol:<type>`); presentasjonen
@@ -65,9 +71,12 @@ export function SymbolLibraryDialog({ onClose }: Props) {
 
   const [search, setSearch] = useState('');
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [newComponentOpen, setNewComponentOpen] = useState(false);
 
   const q = search.trim().toLowerCase();
+  const matchesKind = (def: SymbolDef | { kind: 'pipe' | 'duct' }) =>
+    kindFilter === 'all' || def.kind === kindFilter;
 
   function choose(type: string) {
     setTool(`symbol:${type}`);
@@ -83,12 +92,21 @@ export function SymbolLibraryDialog({ onClose }: Props) {
 
   const filteredBuiltins = builtinTypes
     .map((t) => SYMBOL_DEFS[t])
-    .filter((def) => !q || def.label.toLowerCase().includes(q));
+    .filter((def) => matchesKind(def) && (!q || def.label.toLowerCase().includes(q)));
 
-  const filteredCustom = customComponents.filter((c) => !q || c.label.toLowerCase().includes(q));
+  const filteredCustom = customComponents.filter(
+    (c) => matchesKind(c) && (!q || c.label.toLowerCase().includes(q)),
+  );
 
-  const showCustom = activeGroup === CUSTOM_GROUP || (activeGroup === null && filteredCustom.length > 0 && q !== '');
+  // Egendefinerte komponenter vises alltid i «Alle» og i «Mine komponenter» – de skal
+  // ikke kreve at man først skriver et søk for å dukke opp (rettet kvirk).
+  const showCustom = activeGroup === CUSTOM_GROUP || activeGroup === null;
   const showBuiltins = activeGroup !== CUSTOM_GROUP;
+  // Skjul en kategori-knapp helt når gjeldende rør/ventilasjon-filter tømmer den – en
+  // «Ventiler (rør)»-knapp som ikke viser noe under «Ventilasjon»-filteret er bare støy.
+  const visibleGroups = LIBRARY_GROUPS.filter(
+    (g) => kindFilter === 'all' || g.types.some((t) => SYMBOL_DEFS[t].kind === kindFilter),
+  );
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -110,6 +128,30 @@ export function SymbolLibraryDialog({ onClose }: Props) {
               autoFocus
             />
           </div>
+          <div className="symbol-library-kind-filter">
+            {(['all', 'pipe', 'duct'] as const).map((k) => (
+              <button
+                key={k}
+                className={`symbol-library-kind ${kindFilter === k ? 'active' : ''}`}
+                onClick={() => {
+                  setKindFilter(k);
+                  // Ikke bli stående på en kategori som forsvinner under det nye filteret.
+                  if (
+                    activeGroup &&
+                    activeGroup !== CUSTOM_GROUP &&
+                    k !== 'all' &&
+                    !LIBRARY_GROUPS.find((g) => g.label === activeGroup)?.types.some(
+                      (t) => SYMBOL_DEFS[t].kind === k,
+                    )
+                  ) {
+                    setActiveGroup(null);
+                  }
+                }}
+              >
+                {KIND_FILTER_LABEL[k]}
+              </button>
+            ))}
+          </div>
           <div className="symbol-library-layout">
             <div className="symbol-library-categories">
               <button
@@ -118,7 +160,7 @@ export function SymbolLibraryDialog({ onClose }: Props) {
               >
                 Alle
               </button>
-              {LIBRARY_GROUPS.map((g) => (
+              {visibleGroups.map((g) => (
                 <button
                   key={g.label}
                   className={`symbol-library-cat ${activeGroup === g.label ? 'active' : ''}`}
