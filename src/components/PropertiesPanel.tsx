@@ -174,6 +174,47 @@ export function PropertiesPanel() {
     if (!line) return null;
     const sub = SUBCATEGORIES[line.subId];
     const cat = categoryOf(line.subId);
+    // Forsvar mot en subId som ikke (lenger) finnes – f.eks. en gammel kategori-id fra
+    // FØR migrateSubId ble innført et sted den ikke dekket. Uten dette ville panelet
+    // krasje i stedet for å vise linja som «ukjent» og la den slettes.
+    if (!sub || !cat) {
+      return (
+        <section className="properties-panel">
+          <div className="panel-header">
+            <h3>Egenskaper – linje</h3>
+          </div>
+          <p className="muted">
+            Ukjent underkategori («{line.subId}») – trolig fra en eldre versjon av
+            katalogen. Slett linja, eller velg en gyldig kategori under om du vil beholde
+            geometrien.
+          </p>
+          <label className="field">
+            <span>Kategori / system</span>
+            <select
+              value=""
+              onChange={(e) => e.target.value && updateLineProps(line.id, { subId: e.target.value })}
+            >
+              <option value="" disabled>
+                Velg…
+              </option>
+              {CATEGORIES.map((c) => (
+                <optgroup key={c.code} label={`${c.code} ${c.label}`}>
+                  {c.subs.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <button className="btn danger full" onClick={deleteSelected}>
+            <Trash2 size={15} />
+            Slett linje
+          </button>
+        </section>
+      );
+    }
     const lenPx = polylineLength(line.points);
     const subColor = colorFor(sub, customColors);
     return (

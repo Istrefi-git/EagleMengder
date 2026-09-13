@@ -603,6 +603,10 @@ body {
   cursor: pointer;
   flex-shrink: 0;
 }
+.tool-swatch-line {
+  flex-shrink: 0;
+  display: block;
+}
 .tool-swatch-input {
   position: absolute;
   inset: -4px;

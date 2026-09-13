@@ -121,16 +121,37 @@ export type ToolMode =
   | 'copy'
   | 'split'
   | 'trimextend'
+  | 'align'
   | `line:${string}` // line:<underkategori-id>
   | `symbol:${SymbolType}`
   | `annotation:${AnnotationType}`
   | `measure:${MeasurementType}`;
+
+/** Strekstil for en rør-/kanaltype eller en detaljstrek. Dash-mønstrene under er i
+ * BILDEpiksler – ganges med invScale ved rendring slik at mønsteret har konstant
+ * størrelse på skjermen uansett zoom, samme regel som alt annet kosmetisk i
+ * PdfCanvas (se f.eks. duct-senterlinja). */
+export type LineStyleId = 'solid' | 'dashed' | 'dashdot' | 'dashdotdot';
+export const LINE_STYLE_DASH: Record<LineStyleId, number[] | undefined> = {
+  solid: undefined,
+  dashed: [14, 7],
+  dashdot: [14, 5, 2.5, 5],
+  dashdotdot: [14, 5, 2.5, 5, 2.5, 5],
+};
+export function dashFor(style: LineStyleId | undefined, invScale: number): number[] | undefined {
+  const pattern = LINE_STYLE_DASH[style ?? 'solid'];
+  return pattern?.map((v) => v * invScale);
+}
 
 export interface SubCategoryDef {
   /** Unik id, f.eks. "31.vv" */
   id: string;
   label: string;
   color: string;
+  /** Strekstil på lerretet – solid for de fleste, stiplet/prikk-strek for å skille
+   * rørtyper med lik farge (f.eks. tur/retur på samme kurs). Default 'solid' hvis
+   * feltet mangler (gamle egendefinerte kategorier finnes ikke, men vær defensiv). */
+  lineStyle: LineStyleId;
   /** Tilgjengelige materialer/rørtyper for denne underkategorien */
   materials: string[];
   /** Tilgjengelige dimensjoner */
@@ -405,9 +426,11 @@ export const CATEGORIES: CategoryDef[] = [
     label: 'Sanitæranlegg',
     kind: 'pipe',
     subs: [
-      { id: '31.vv', label: 'Varmtvannsrør', color: '#e8533b', materials: TAPPEVANN_MAT, dimensions: TAPPEVANN_DIM },
-      { id: '31.kv', label: 'Kaldtvann', color: '#2f80ed', materials: TAPPEVANN_MAT, dimensions: TAPPEVANN_DIM },
-      { id: '31.avlop', label: 'Avløpsrør', color: '#8a5a2b', materials: AVLOP_MAT, dimensions: AVLOP_DIM },
+      { id: '31.spillvann', label: 'Spillvannsledning', color: '#2e7d32', lineStyle: 'dashdot', materials: AVLOP_MAT, dimensions: AVLOP_DIM },
+      { id: '31.overvann', label: 'Overvannsledning', color: '#8e24aa', lineStyle: 'dashed', materials: AVLOP_MAT, dimensions: AVLOP_DIM },
+      { id: '31.kv', label: 'Kaldtvann forbruksvann', color: '#1a237e', lineStyle: 'solid', materials: TAPPEVANN_MAT, dimensions: TAPPEVANN_DIM },
+      { id: '31.vv', label: 'Varmtvann forbruksvann', color: '#e53935', lineStyle: 'dashdot', materials: TAPPEVANN_MAT, dimensions: TAPPEVANN_DIM },
+      { id: '31.vvc', label: 'Varmtvann sirkulasjon', color: '#e91e8c', lineStyle: 'dashdotdot', materials: TAPPEVANN_MAT, dimensions: TAPPEVANN_DIM },
     ],
   },
   {
@@ -415,11 +438,8 @@ export const CATEGORIES: CategoryDef[] = [
     label: 'Varmeanlegg',
     kind: 'pipe',
     subs: [
-      { id: '32.hoved', label: 'Hovedkurs', color: '#9b1c1c', materials: VARME_MAT, dimensions: VARME_DIM },
-      { id: '32.radiator', label: 'Radiatorkurs', color: '#d11a2a', materials: VARME_MAT, dimensions: VARME_DIM },
-      { id: '32.gulvvarme', label: 'Gulvvarmekurs', color: '#c2185b', materials: VARME_MAT, dimensions: VARME_DIM },
-      { id: '32.ventbatteri', label: 'Ventilasjonskurs', color: '#e8731f', materials: VARME_MAT, dimensions: VARME_DIM },
-      { id: '32.konvektor', label: 'Konvektorkurs', color: '#ad4e00', materials: VARME_MAT, dimensions: VARME_DIM },
+      { id: '32.tur', label: 'Varme tur', color: '#e07b1f', lineStyle: 'solid', materials: VARME_MAT, dimensions: VARME_DIM },
+      { id: '32.retur', label: 'Varme retur', color: '#a1682a', lineStyle: 'dashed', materials: VARME_MAT, dimensions: VARME_DIM },
     ],
   },
   {
@@ -427,10 +447,8 @@ export const CATEGORIES: CategoryDef[] = [
     label: 'Kjøleanlegg',
     kind: 'pipe',
     subs: [
-      { id: '37.hoved', label: 'Hovedkurs', color: '#006064', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
-      { id: '37.ventbatteri', label: 'Ventilasjonskurs', color: '#00838f', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
-      { id: '37.baffel', label: 'Kjølebaffelkurs', color: '#0277bd', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
-      { id: '37.fancoil', label: 'Fancoilkurs', color: '#5e35b1', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
+      { id: '37.tur', label: 'Kjøling tur', color: '#1565c0', lineStyle: 'solid', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
+      { id: '37.retur', label: 'Kjøling retur', color: '#1565c0', lineStyle: 'dashed', materials: KJOLE_MAT, dimensions: KJOLE_DIM },
     ],
   },
   {
@@ -438,13 +456,38 @@ export const CATEGORIES: CategoryDef[] = [
     label: 'Ventilasjonsanlegg',
     kind: 'duct',
     subs: [
-      { id: '36.tilluft', label: 'Tilluftskanal', color: '#1e88e5', materials: KANAL_MAT, dimensions: KANAL_DIM },
-      { id: '36.avtrekk', label: 'Avtrekkskanal', color: '#fb8c00', materials: KANAL_MAT, dimensions: KANAL_DIM },
-      { id: '36.inntak', label: 'Inntakskanal', color: '#43a047', materials: KANAL_MAT, dimensions: KANAL_DIM },
-      { id: '36.avkast', label: 'Avkastkanal', color: '#6d4c41', materials: KANAL_MAT, dimensions: KANAL_DIM },
+      { id: '36.tilluft', label: 'Tilluftskanal', color: '#1e88e5', lineStyle: 'solid', materials: KANAL_MAT, dimensions: KANAL_DIM },
+      { id: '36.avtrekk', label: 'Avtrekkskanal', color: '#fb8c00', lineStyle: 'solid', materials: KANAL_MAT, dimensions: KANAL_DIM },
+      { id: '36.inntak', label: 'Inntakskanal', color: '#43a047', lineStyle: 'solid', materials: KANAL_MAT, dimensions: KANAL_DIM },
+      { id: '36.avkast', label: 'Avkastkanal', color: '#6d4c41', lineStyle: 'solid', materials: KANAL_MAT, dimensions: KANAL_DIM },
     ],
   },
 ];
+
+/** Konverterer en gammel underkategori-id (fra rørkatalog-oppgraderingen) til nærmeste
+ * nye id, slik at allerede lagrede tilbud fortsatt viser gyldige rør etter oppdateringen.
+ * Ventilasjon (36-serien) er urørt og trenger ingen migrering. Kalles fra
+ * `importSnapshot` (på linjer/bend/avgreininger/overganger) og `loadSettings`
+ * (lineConfig-nøkler + sist-brukt-lista) – FØR noe slås opp i SUBCATEGORIES. */
+export function migrateSubId(oldId: string): string {
+  switch (oldId) {
+    case '31.avlop':
+      return '31.spillvann';
+    case '32.hoved':
+    case '32.radiator':
+    case '32.gulvvarme':
+    case '32.ventbatteri':
+    case '32.konvektor':
+      return '32.tur';
+    case '37.hoved':
+    case '37.ventbatteri':
+    case '37.baffel':
+    case '37.fancoil':
+      return '37.tur';
+    default:
+      return oldId;
+  }
+}
 
 // ── Oppslag ───────────────────────────────────────────────────────────────
 
@@ -769,7 +812,9 @@ export const SYMBOL_DEFS: Record<BuiltInSymbolType, SymbolDef> = {
   condensate_drain: {
     type: 'condensate_drain',
     label: 'Kondensvannavløp',
-    kind: 'duct',
+    // Fysisk et lite avløpsrør (typisk Ø32) ut av aggregatet, ikke en kanaldel – men
+    // plassert på/ved kanalen, derav den opprinnelige (feilaktige) 'duct'-tagging.
+    kind: 'pipe',
     fields: [{ key: 'dimension', label: 'Dimensjon', kind: 'text', default: 'Ø32' }],
   },
   duct_heater: {

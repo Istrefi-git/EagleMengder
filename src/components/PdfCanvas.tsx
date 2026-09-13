@@ -16,6 +16,7 @@ import {
   branchFittingLabel,
   categoryOf,
   colorFor,
+  dashFor,
   defaultBranchFittingForPipe,
   dimensionsForMaterial,
   getBendAngles,
@@ -3544,12 +3545,32 @@ function LineNode({
         ovenfor (se ductRuns), ikke her per segment – gir sammenhengende vegger uten
         hakk ved bend/overganger. Denne noden bidrar likevel med usynlig hit-linje +
         valg-glød under, uendret. */ : pipeRenderStyle === 'cylinder' ? (
-        <PipeTube points={line.points} diameterPx={diameterPx} color={color} />
+        <>
+          <PipeTube points={line.points} diameterPx={diameterPx} color={color} />
+          {/* PipeTube er fylt gradient-geometri uten egen strek og kan derfor ikke
+              stiples – en tynn stilsatt senterlinje oppå gjør rørtypen lesbar i
+              sylinder-visning også, samme idiom som DuctRunSchematics
+              senterlinje (se under). Kun tegnet når stilen faktisk er stiplet/
+              prikk-strek – en solid rørtype trenger ingen ekstra strek oppå sylinderen. */}
+          {sub.lineStyle !== 'solid' && (
+            <Line
+              points={line.points}
+              stroke="#fff"
+              opacity={0.85}
+              strokeWidth={Math.max(1.5 * invScale, 0.4)}
+              dash={dashFor(sub.lineStyle, invScale)}
+              lineCap="round"
+              lineJoin="round"
+              listening={false}
+            />
+          )}
+        </>
       ) : (
         <Line
           points={line.points}
           stroke={color}
           strokeWidth={3 * invScale}
+          dash={dashFor(sub.lineStyle, invScale)}
           lineCap="round"
           lineJoin="round"
           listening={false}

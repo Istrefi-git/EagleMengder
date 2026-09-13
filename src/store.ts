@@ -32,6 +32,7 @@ import {
   SUBCATEGORIES,
   categoryOf,
   defaultSymbolProps,
+  migrateSubId,
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
@@ -899,19 +900,29 @@ function loadSettings(): PersistedSettings {
       lineConfig:
         parsed.lineConfig && typeof parsed.lineConfig === 'object'
           ? Object.fromEntries(
-              Object.entries(parsed.lineConfig as Record<string, unknown>).filter(
-                (entry): entry is [string, { material: string; dimension: string }] => {
-                  // Avvis underkategorier som ikke finnes lenger – ellers mates et
-                  // ugyldig materiale inn i getBendAngles/dimensionsForMaterial.
-                  if (!Object.prototype.hasOwnProperty.call(SUBCATEGORIES, entry[0])) return false;
-                  const v = entry[1] as { material?: unknown; dimension?: unknown } | null;
-                  return !!v && typeof v.material === 'string' && typeof v.dimension === 'string';
-                },
-              ),
+              // Migrer nøkkelen (gammel underkategori-id) FØR gyldighets-sjekken under –
+              // ellers ville en gyldig gammel id blitt kastet fordi den ikke lenger
+              // finnes i SUBCATEGORIES.
+              Object.entries(parsed.lineConfig as Record<string, unknown>)
+                .map(([id, v]) => [migrateSubId(id), v] as [string, unknown])
+                .filter(
+                  (entry): entry is [string, { material: string; dimension: string }] => {
+                    // Avvis underkategorier som ikke finnes lenger – ellers mates et
+                    // ugyldig materiale inn i getBendAngles/dimensionsForMaterial.
+                    if (!Object.prototype.hasOwnProperty.call(SUBCATEGORIES, entry[0])) return false;
+                    const v = entry[1] as { material?: unknown; dimension?: unknown } | null;
+                    return !!v && typeof v.material === 'string' && typeof v.dimension === 'string';
+                  },
+                ),
             )
           : {},
       recentLineTypes: Array.isArray(parsed.recentLineTypes)
         ? (parsed.recentLineTypes as unknown[])
+            .map((r) =>
+              r && typeof r === 'object' && typeof (r as RecentLineType).subId === 'string'
+                ? { ...(r as RecentLineType), subId: migrateSubId((r as RecentLineType).subId) }
+                : r,
+            )
             .filter(
               (r): r is RecentLineType =>
                 !!r &&
@@ -2730,12 +2741,19 @@ export const useStore = create<AppState>((set, get) => {
       });
       return;
     }
+    // Rørkatalog-oppgraderingen fjernet noen underkategori-id-er (f.eks. «32.hoved» ble
+    // «32.tur») – migrer subId på alt som bærer en, FØR noe slås opp i SUBCATEGORIES,
+    // slik at allerede lagrede tilbud fortsatt viser gyldige rør (ventilasjon/36-serien
+    // er urørt av oppgraderingen, migrateSubId er identitet for dem).
+    const migratedLineConfig = Object.fromEntries(
+      Object.entries(snapshot.lineConfig ?? {}).map(([id, v]) => [migrateSubId(id), v]),
+    );
     set({
-      lines: snapshot.lines,
+      lines: snapshot.lines.map((l) => ({ ...l, subId: migrateSubId(l.subId) })),
       symbols: snapshot.symbols,
-      transitions: snapshot.transitions,
-      branches: snapshot.branches ?? [],
-      bends: snapshot.bends ?? [],
+      transitions: (snapshot.transitions ?? []).map((t) => ({ ...t, subId: migrateSubId(t.subId) })),
+      branches: (snapshot.branches ?? []).map((b) => ({ ...b, subId: migrateSubId(b.subId) })),
+      bends: (snapshot.bends ?? []).map((b) => ({ ...b, subId: migrateSubId(b.subId) })),
       annotations: snapshot.annotations ?? [],
       tags: snapshot.tags ?? [],
       clamps: snapshot.clamps ?? [],
@@ -2744,7 +2762,7 @@ export const useStore = create<AppState>((set, get) => {
       scale: snapshot.scale,
       // Globale standarder som bunn, tilbudets egne valg oppå – tegningens
       // egne valg er mer spesifikke enn dine generelle vaner.
-      lineConfig: { ...loadSettings().lineConfig, ...(snapshot.lineConfig ?? {}) },
+      lineConfig: { ...loadSettings().lineConfig, ...migratedLineConfig },
       symbolConfig: snapshot.symbolConfig ?? {},
       fileName: snapshot.fileName,
       numPages: snapshot.numPages,

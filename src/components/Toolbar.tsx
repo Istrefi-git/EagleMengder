@@ -59,8 +59,19 @@ import {
   RECT_DUCT_MATERIAL,
   SUBCATEGORIES,
 } from '../types';
-import type { SubCategoryDef, ToolMode } from '../types';
+import type { LineStyleId, SubCategoryDef, ToolMode } from '../types';
 import { SymbolLibraryDialog } from './SymbolLibraryDialog';
+
+/** SVG stroke-dasharray-mønstre for verktøylinjas fargeprøve – egne, litt tettere tall
+ * enn LINE_STYLE_DASH (som er i bildepiksler for lerretet), fordi prøven her alltid
+ * er 18px bred uansett zoom. Gir verktøylinja selv rollen som tegnforklaring for
+ * rørtypene. */
+const TOOLBAR_DASH: Record<LineStyleId, string | undefined> = {
+  solid: undefined,
+  dashed: '5,3',
+  dashdot: '5,2,1,2',
+  dashdotdot: '5,2,1,2,1,2',
+};
 
 export const SYMBOL_ICONS: Record<string, LucideIcon | ComponentType<{ size?: number }>> = {
   tee: GitFork,
@@ -487,14 +498,27 @@ function SubPicker({
             onClick={(e) => e.stopPropagation()}
             title="Endre farge for denne underkategorien"
           >
-            <span
-              className="tool-swatch"
-              style={{
-                background: dashed ? 'transparent' : color,
-                borderColor: color,
-                borderStyle: dashed ? 'dashed' : 'solid',
-              }}
-            />
+            {dashed ? (
+              <span
+                className="tool-swatch"
+                style={{ background: 'transparent', borderColor: color, borderStyle: 'dashed' }}
+              />
+            ) : (
+              // Rør: en ekte strekprøve (farge + stiplingsmønster) i stedet for et rent
+              // fargekvadrat – verktøylinja blir da selv tegnforklaringen for strektypene.
+              <svg width="18" height="8" className="tool-swatch-line" aria-hidden="true">
+                <line
+                  x1="0"
+                  y1="4"
+                  x2="18"
+                  y2="4"
+                  stroke={color}
+                  strokeWidth={2.5}
+                  strokeDasharray={TOOLBAR_DASH[sub.lineStyle]}
+                  strokeLinecap="round"
+                />
+              </svg>
+            )}
             <input
               type="color"
               className="tool-swatch-input"
