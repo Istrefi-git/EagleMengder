@@ -142,6 +142,14 @@ export function dashFor(style: LineStyleId | undefined, invScale: number): numbe
   const pattern = LINE_STYLE_DASH[style ?? 'solid'];
   return pattern?.map((v) => v * invScale);
 }
+/** Norsk visningsnavn for strekstil-nedtrekkslistene (rørkatalog, detaljstrek-HUD,
+ * egenskapspanelet). */
+export const LINE_STYLE_LABEL: Record<LineStyleId, string> = {
+  solid: 'Heltrukket',
+  dashed: 'Stiplet',
+  dashdot: 'Strek-prikk',
+  dashdotdot: 'Strek-prikk-prikk',
+};
 
 export interface SubCategoryDef {
   /** Unik id, f.eks. "31.vv" */
@@ -297,6 +305,9 @@ export interface AnnotationEntity {
   /** Melding (callout): punktet leder-streken peker til. Selve tekstboksen står i x,y. */
   anchorX?: number;
   anchorY?: number;
+  /** Strekstil (heltrukket/stiplet/strekprikk/...) – kun relevant for linje/pil/polygon,
+   * samme katalog som rørkatalogens `SubCategoryDef.lineStyle`. */
+  lineStyle?: LineStyleId;
 }
 
 /** Merkelapp (tag) med leaderlinje, festet til et rør/kanal – viser rørtype +

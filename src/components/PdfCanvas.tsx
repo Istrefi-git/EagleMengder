@@ -8,6 +8,7 @@ import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
   CATEGORIES,
+  LINE_STYLE_LABEL,
   POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
   TEXT_ANNOTATION_TYPES,
@@ -36,6 +37,7 @@ import type {
   CustomComponentDef,
   DuctCapEntity,
   LineEntity,
+  LineStyleId,
   MeasurementEntity,
   MeasurementType,
   PipeRenderStyle,
@@ -89,6 +91,11 @@ function isTypingContext(e: KeyboardEvent): boolean {
   };
   return isTypingEl(e.target) || isTypingEl(document.activeElement);
 }
+
+/** Tillatte turn-vinkler for vinkellås på en detaljstrek (annotationType 'line') – rene
+ * 45°-multipler, i motsetning til rørtegningens materialspesifikke `activeBendAngles`
+ * (en markup-strek har ikke noe materiale å slå opp standardvinkler for). */
+const DETAIL_LINE_ANGLES = [45, 90, 135, 180];
 
 export function PdfCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -232,8 +239,14 @@ export function PdfCanvas() {
   // Klikk+dra-definisjon av en boks-basert markup-annotasjon (rektangel, ellipse,
   // markering/highlight, tekstboks) – samme mønster som cloudDraft.
   const [boxDraft, setBoxDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  // Klikk+dra-definisjon av en linje/pil-annotasjon.
+  // Klikk+dra-definisjon av en pil-annotasjon (pil beholder to punkter – en pil har
+  // kun én spiss). Detaljstrek (annotationType 'line') bruker i stedet
+  // `lineDraftPoints` under, som tillater vilkårlig mange ledd.
   const [lineDraft, setLineDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // Fler-klikk-akkumulerte punkter for en detaljstrek (annotationType 'line') – klikk-
+  // klikk-klikk, samme mønster som polygonDraftPoints under: Enter/dobbeltklikk/
+  // høyreklikk avslutter, Backspace angrer siste punkt, Escape avbryter.
+  const [lineDraftPoints, setLineDraftPoints] = useState<number[]>([]);
   // Fler-klikk-akkumulerte punkter for en polygon-annotasjon (lukkes ved klikk nær
   // startpunktet eller Enter, samme mønster som areal-målingsverktøyet).
   const [polygonDraftPoints, setPolygonDraftPoints] = useState<number[]>([]);
@@ -448,6 +461,7 @@ export function PdfCanvas() {
         setCalibPoints([]);
         setMeasureDraftPoints([]);
         setPolygonDraftPoints([]);
+        setLineDraftPoints([]);
         setCloudDraft(null);
         setBoxDraft(null);
         setLineDraft(null);
@@ -481,6 +495,13 @@ export function PdfCanvas() {
       } else if (e.key === 'Enter' && annotationType === 'polygon' && polygonDraftPoints.length >= 6) {
         addAnnotation('polygon', 0, 0, { points: polygonDraftPoints });
         setPolygonDraftPoints([]);
+      } else if (e.key === 'Enter' && annotationType === 'line' && lineDraftPoints.length >= 4) {
+        finishLineAnnotationDraft();
+      } else if (annotationType === 'line' && lineDraftPoints.length >= 2 && e.key === 'Backspace') {
+        // Fjerner siste plasserte knekkpunkt i den påbegynte detaljstreken – samme
+        // mønster som Backspace-grenen for rørtegning under.
+        e.preventDefault();
+        setLineDraftPoints((prev) => prev.slice(0, -2));
       } else if (
         isTransformTool &&
         transformBase &&
@@ -627,6 +648,7 @@ export function PdfCanvas() {
     addMeasurement,
     annotationType,
     polygonDraftPoints,
+    lineDraftPoints,
     addAnnotation,
     isAnnotationTool,
     isMeasureTool,
@@ -1117,6 +1139,41 @@ export function PdfCanvas() {
     continuationAnchor,
   ]);
 
+  /** Snapper neste punkt i en detaljstrek (annotationType 'line'): geometri-snap
+   * (endepunkt/utstyr/på-linja, samme `findMeasureSnapPoint` som måleverktøyene) har
+   * prioritet – finnes ingen slik snap i nærheten, låses retningen i stedet til nærmeste
+   * 45°-multiplum (`snapFirstPoint`/`snapNextPoint`). Shift dropper BEGGE, akkurat som
+   * `computeLinePoint` over gjør for rørtegning – samme inverterte Shift-konvensjon. */
+  const computeDetailLinePoint = useCallback(
+    (
+      raw: { x: number; y: number },
+      shiftKey: boolean,
+    ): { x: number; y: number; kind: 'endpoint' | 'online' | 'symbol' | 'close' | null } => {
+      if (shiftKey) return { ...raw, kind: null };
+      const snap = findMeasureSnapPoint(raw);
+      if (snap) return snap;
+      if (lineDraftPoints.length === 2) {
+        return { ...snapFirstPoint({ x: lineDraftPoints[0], y: lineDraftPoints[1] }, raw), kind: null };
+      }
+      if (lineDraftPoints.length >= 4) {
+        return { ...snapNextPoint(lineDraftPoints, raw, DETAIL_LINE_ANGLES), kind: null };
+      }
+      return { ...raw, kind: null };
+    },
+    [findMeasureSnapPoint, lineDraftPoints],
+  );
+
+  /** Avslutter en pågående detaljstrek (Enter/dobbeltklikk/høyreklikk) – samme
+   * fullførings-idiom som finishLine over, bare for annotasjons-streken. Minst to
+   * plasserte punkter (4 tall) kreves; ellers forkastes den påbegynte streken stille. */
+  const finishLineAnnotationDraft = useCallback(() => {
+    if (lineDraftPoints.length >= 4) {
+      addAnnotation('line', 0, 0, { points: lineDraftPoints });
+    }
+    setLineDraftPoints([]);
+    setCursor(null);
+  }, [lineDraftPoints, addAnnotation]);
+
   /** Bytter dimensjon midt i en pågående tegning: avslutter strekket så langt (som separate
    * rette segmenter), legger til en synlig overgang (kanalen/røret blir smalere/bredere
    * fra dette punktet), og fortsetter tegningen med ny dimensjon. */
@@ -1428,8 +1485,16 @@ export function PdfCanvas() {
           } else {
             setPolygonDraftPoints((prev) => [...prev, p.x, p.y]);
           }
-        } else if (annotationType === 'line' || annotationType === 'arrow') {
+        } else if (annotationType === 'arrow') {
+          // Pilen beholder to punkter (klikk-flytt-klikk, se lineDraft-grenen over) –
+          // en pil har bare én spiss.
           setLineDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        } else if (annotationType === 'line') {
+          // Detaljstrek: fler-klikk med snapping + vinkellås, samme mønster som
+          // polygon-grenen over. Enter/dobbeltklikk/høyreklikk avslutter (se
+          // finishLineAnnotationDraft), Backspace angrer siste punkt (se keydown).
+          const point = computeDetailLinePoint(p, e.evt.shiftKey);
+          setLineDraftPoints((prev) => [...prev, point.x, point.y]);
         } else if (annotationType === 'cloud') {
           setCloudDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
         } else {
@@ -1633,6 +1698,8 @@ export function PdfCanvas() {
       annotationType,
       addAnnotation,
       polygonDraftPoints,
+      lineDraftPoints,
+      computeDetailLinePoint,
       cloudDraft,
       boxDraft,
       lineDraft,
@@ -1704,7 +1771,8 @@ export function PdfCanvas() {
         tool !== 'split' &&
         !isMeasureTool &&
         !isTransformTool &&
-        annotationType !== 'polygon'
+        annotationType !== 'polygon' &&
+        annotationType !== 'line'
       ) {
         setHoverSnap((h) => (h ? null : h));
         return;
@@ -1714,6 +1782,14 @@ export function PdfCanvas() {
       if (annotationType === 'polygon') {
         // Levende forhåndsvisning av neste segment til lukking (se render lenger ned).
         setCursor(p);
+        return;
+      }
+      if (annotationType === 'line') {
+        // Levende forhåndsvisning av neste ledd i detaljstreken – samme snap +
+        // vinkellås som selve klikket (mousedown) bruker.
+        const point = computeDetailLinePoint(p, e.evt.shiftKey);
+        setCursor(point);
+        setMeasureSnapKind(point.kind);
         return;
       }
       if (isMeasureTool) {
@@ -1846,6 +1922,7 @@ export function PdfCanvas() {
       boxDraft,
       lineDraft,
       annotationType,
+      computeDetailLinePoint,
       isLineTool,
       isSymbolTool,
       isMeasureTool,
@@ -2038,7 +2115,8 @@ export function PdfCanvas() {
 
   const handleDblClick = useCallback(() => {
     if (isLineTool) finishLine();
-  }, [isLineTool, finishLine]);
+    else if (annotationType === 'line') finishLineAnnotationDraft();
+  }, [isLineTool, finishLine, annotationType, finishLineAnnotationDraft]);
 
   const handleWheel = useCallback(
     (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -2087,6 +2165,11 @@ export function PdfCanvas() {
         }
         return;
       }
+      // Samme «avslutt på stedet» for en påbegynt detaljstrek.
+      if (annotationType === 'line' && lineDraftPoints.length > 0) {
+        finishLineAnnotationDraft();
+        return;
+      }
       // tool !== 'select': ingenting å gjøre her (andre verktøy har egne
       // høyreklikk-regler, eller ingen). tool === 'select' på TOMT lerret: LineNode sin
       // egen onContextMenu (kroppen) har allerede satt cancelBubble hvis klikket traff
@@ -2094,7 +2177,7 @@ export function PdfCanvas() {
       // kontekstmenyen (fire valg: avgrening/klammer/flytt/slett) åpnes derfor kun ved
       // å treffe selve røret/kanalen, ikke «nær nok» som den gamle klammer-gesten gjorde.
     },
-    [isLineTool, draftPoints, finishLine],
+    [isLineTool, draftPoints, finishLine, annotationType, lineDraftPoints, finishLineAnnotationDraft],
   );
 
   // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
@@ -2609,6 +2692,24 @@ export function PdfCanvas() {
               />
             </label>
           )}
+          {POINT_ANNOTATION_TYPES.has(annotationType) && (
+            <label className="annotation-hud-number">
+              <span>Strekstil</span>
+              <select
+                className="draw-hud-select"
+                value={annotationConfig[annotationType].lineStyle}
+                onChange={(e) =>
+                  setAnnotationConfig(annotationType, { lineStyle: e.target.value as LineStyleId })
+                }
+              >
+                {(Object.keys(LINE_STYLE_LABEL) as LineStyleId[]).map((id) => (
+                  <option key={id} value={id}>
+                    {LINE_STYLE_LABEL[id]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       )}
 
@@ -2948,14 +3049,15 @@ export function PdfCanvas() {
               fill="rgba(124,77,255,0.08)"
             />
           )}
-          {(isMeasureTool || isTransformTool) && cursor && (
+          {(isMeasureTool || isTransformTool || (annotationType === 'line' && isAnnotationTool)) && cursor && (
             // Permanent sikte (trådkors) på pekeren i måleverktøyene OG i Flytt/Kopier
             // (brukeren ba spesifikt om samme sikte der), slik at man kan treffe
             // nøyaktig der man vil måle/flytte/kopiere fra – uavhengig av om man er
             // snappet til noe. Tegnes som to hårlinjer med en liten åpning midt i, pluss
             // et lite senterpunkt. Snap-indikatoren under tegnes oppå når man faktisk er
             // snappet. Fargen følger verktøyet – samme palett som spøkelses-
-            // forhåndsvisningen ved Flytt/Kopier.
+            // forhåndsvisningen ved Flytt/Kopier. Gjenbrukt for detaljstreken (C3), som
+            // har akkurat samme geometri-snap + vinkellås-mønster.
             <Group x={cursor.x} y={cursor.y} listening={false}>
               <Line
                 points={[-14 * invScale, 0, -4 * invScale, 0]}
@@ -2980,7 +3082,7 @@ export function PdfCanvas() {
               <Circle radius={1.5 * invScale} fill={crosshairColor} />
             </Group>
           )}
-          {(isMeasureTool || isTransformTool) && measureSnapKind && cursor && (
+          {(isMeasureTool || isTransformTool || (annotationType === 'line' && isAnnotationTool)) && measureSnapKind && cursor && (
             <Group x={cursor.x} y={cursor.y}>
               <Circle
                 radius={7 * invScale}
@@ -3041,12 +3143,22 @@ export function PdfCanvas() {
               dash={[6 * invScale, 4 * invScale]}
             />
           )}
-          {lineDraft && annotationType && (
+          {lineDraft && annotationType === 'arrow' && (
             <Line
               points={[lineDraft.x0, lineDraft.y0, lineDraft.x1, lineDraft.y1]}
-              stroke={annotationConfig[annotationType].color}
+              stroke={annotationConfig.arrow.color}
               strokeWidth={2 * invScale}
               dash={[6 * invScale, 4 * invScale]}
+            />
+          )}
+          {annotationType === 'line' && lineDraftPoints.length >= 2 && (
+            <Line
+              points={cursor ? [...lineDraftPoints, cursor.x, cursor.y] : lineDraftPoints}
+              stroke={annotationConfig.line.color}
+              strokeWidth={Math.max(annotationConfig.line.strokeWidth, 1) * invScale}
+              dash={dashFor(annotationConfig.line.lineStyle, invScale) ?? [6 * invScale, 4 * invScale]}
+              lineCap="round"
+              lineJoin="round"
             />
           )}
           {annotationType === 'polygon' && polygonDraftPoints.length >= 2 && (
@@ -4413,7 +4525,14 @@ function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange
         </>
       )}
       {note.type === 'line' && (
-        <Line points={points} stroke={note.color} strokeWidth={strokeWidth * invScale} hitStrokeWidth={hitStrokeWidth} lineCap="round" />
+        <Line
+          points={points}
+          stroke={note.color}
+          strokeWidth={strokeWidth * invScale}
+          dash={dashFor(note.lineStyle, invScale)}
+          hitStrokeWidth={hitStrokeWidth}
+          lineCap="round"
+        />
       )}
       {note.type === 'arrow' && (
         <Arrow
@@ -4421,6 +4540,7 @@ function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange
           stroke={note.color}
           fill={note.color}
           strokeWidth={strokeWidth * invScale}
+          dash={dashFor(note.lineStyle, invScale)}
           hitStrokeWidth={hitStrokeWidth}
           pointerLength={10 * invScale}
           pointerWidth={9 * invScale}
@@ -4431,6 +4551,7 @@ function AnnotationNode({ note, selected, invScale, editable, onSelect, onChange
           points={points}
           stroke={note.color}
           strokeWidth={strokeWidth * invScale}
+          dash={dashFor(note.lineStyle, invScale)}
           closed
           fill={note.fill}
           hitStrokeWidth={hitStrokeWidth}

@@ -9,6 +9,7 @@ import type {
   DuctCapEntity,
   CustomComponentDef,
   LineEntity,
+  LineStyleId,
   MeasurementEntity,
   MeasurementType,
   PipeRenderStyle,
@@ -1148,7 +1149,10 @@ interface AppState {
   /** Sist brukt stil for nye annotasjoner/markup, per type. Én felles form (ikke alle
    * felt er relevante for alle typer – f.eks. leser tekst-typene kun fontSize, mens
    * former leser strokeWidth) holder typingen enkel og gjenbrukbar. */
-  annotationConfig: Record<AnnotationType, { color: string; strokeWidth: number; fontSize: number; opacity: number }>;
+  annotationConfig: Record<
+    AnnotationType,
+    { color: string; strokeWidth: number; fontSize: number; opacity: number; lineStyle: LineStyleId }
+  >;
 
   // Ventende valg av avgreiningstype for kanaler (påstikk/T-kanal)
   pendingBranchChoice: PendingBranchChoice | null;
@@ -1317,13 +1321,13 @@ interface AppState {
     x: number,
     y: number,
     extra?: Partial<
-      Pick<AnnotationEntity, 'text' | 'width' | 'height' | 'rotation' | 'points' | 'fill' | 'opacity'>
+      Pick<AnnotationEntity, 'text' | 'width' | 'height' | 'rotation' | 'points' | 'fill' | 'opacity' | 'lineStyle'>
     >,
   ) => void;
   updateAnnotation: (id: string, patch: Partial<AnnotationEntity>) => void;
   setAnnotationConfig: (
     type: AnnotationType,
-    patch: Partial<{ color: string; fontSize: number; strokeWidth: number; opacity: number }>,
+    patch: Partial<{ color: string; fontSize: number; strokeWidth: number; opacity: number; lineStyle: LineStyleId }>,
   ) => void;
 
   addTransition: (
@@ -1555,16 +1559,16 @@ export const useStore = create<AppState>((set, get) => {
   quantitySortBy: initialSettings.quantitySortBy,
   quantitySortDir: initialSettings.quantitySortDir,
   annotationConfig: {
-    text: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    textbox: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    callout: { color: '#1a1a1a', strokeWidth: 2, fontSize: 13, opacity: 1 },
-    cloud: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    line: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    arrow: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    ellipse: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    rect: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    polygon: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1 },
-    highlight: { color: '#ffff00', strokeWidth: 0, fontSize: 14, opacity: 0.35 },
+    text: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    textbox: { color: '#1a1a1a', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    callout: { color: '#1a1a1a', strokeWidth: 2, fontSize: 13, opacity: 1, lineStyle: 'solid' },
+    cloud: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    line: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    arrow: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    ellipse: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    rect: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    polygon: { color: '#e74c3c', strokeWidth: 2, fontSize: 14, opacity: 1, lineStyle: 'solid' },
+    highlight: { color: '#ffff00', strokeWidth: 0, fontSize: 14, opacity: 0.35, lineStyle: 'solid' },
   },
 
   pendingBranchChoice: null,
@@ -2084,6 +2088,7 @@ export const useStore = create<AppState>((set, get) => {
         points: extra?.points ?? (type === 'polygon' ? [] : [x, y, x, y]),
         strokeWidth: cfg.strokeWidth,
         fill: extra?.fill,
+        lineStyle: cfg.lineStyle,
       };
     }
     note = { ...note, ...extra };

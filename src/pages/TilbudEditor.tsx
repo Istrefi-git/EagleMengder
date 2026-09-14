@@ -42,6 +42,12 @@ function getHint(tool: string): string | null {
     );
   if (tool === 'measure:distance') return 'Klikk to punkter · snapper til endepunkter og utstyr';
   if (tool === 'measure:area') return 'Klikk punkt for punkt rundt rommet · Enter lukker figuren';
+  if (tool === 'annotation:line')
+    return (
+      'Klikk for knekkpunkter · snapper til endepunkter/utstyr/på-linja · Shift tegner fritt ' +
+      '(av med vinkellås) · Backspace angrer siste punkt · høyreklikk, dobbeltklikk eller Enter ' +
+      'avslutter · Esc avbryter'
+    );
   if (tool.startsWith('annotation:')) return 'Klikk og dra – eller klikk, flytt, klikk – for å tegne';
   return null;
 }

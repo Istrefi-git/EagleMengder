@@ -5,6 +5,8 @@ import {
   CLAMP_ROD_DIAMETERS,
   CLAMP_ROD_LENGTH_MM,
   DEFAULT_CLAMP_ROD_DIAMETER,
+  LINE_STYLE_LABEL,
+  POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
   TEXT_ANNOTATION_TYPES,
   annotationTypeLabel,
@@ -16,6 +18,7 @@ import {
   symbolDefFor,
   tagLabel,
 } from '../types';
+import type { LineStyleId } from '../types';
 import { polygonArea, polylineLength } from '../lib/geometry';
 import { formatAreaM2, formatLengthMm } from '../lib/scale';
 
@@ -463,6 +466,21 @@ export function PropertiesPanel() {
               value={note.strokeWidth ?? 2}
               onChange={(e) => updateAnnotation(note.id, { strokeWidth: Number(e.target.value) })}
             />
+          </label>
+        )}
+        {POINT_ANNOTATION_TYPES.has(note.type) && (
+          <label className="field">
+            <span>Strekstil</span>
+            <select
+              value={note.lineStyle ?? 'solid'}
+              onChange={(e) => updateAnnotation(note.id, { lineStyle: e.target.value as LineStyleId })}
+            >
+              {(Object.keys(LINE_STYLE_LABEL) as LineStyleId[]).map((id) => (
+                <option key={id} value={id}>
+                  {LINE_STYLE_LABEL[id]}
+                </option>
+              ))}
+            </select>
           </label>
         )}
         <button className="btn danger full" onClick={deleteSelected}>
