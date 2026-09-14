@@ -232,6 +232,11 @@ export function PdfCanvas() {
   // Trim/Forleng (C6): klikk 1 armerer grensen (holdes armert til Escape eller
   // verktøybytte, slik at flere segmenter kan trimmes/forlenges mot samme grense).
   const [trimBoundaryId, setTrimBoundaryId] = useState<string | null>(null);
+  // Align (C4): klikk 1 armerer referanselinja (samme «bli stående armert»-mønster som
+  // trimBoundaryId over), klikk 2 flytter målet vinkelrett inntil den. Referansen er
+  // ALLTID et rør/kanal (den definerer en retning) – målet kan være et rør/kanal ELLER
+  // et utstyr.
+  const [alignRefId, setAlignRefId] = useState<string | null>(null);
   // Klikk+dra-definisjon av en ny sky-annotasjon (rektangel, à la gummibånd)
   const [cloudDraft, setCloudDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
@@ -447,6 +452,11 @@ export function PdfCanvas() {
         setTrimBoundaryId(null);
         return;
       }
+      // Samme prinsipp for Align: første Escape tømmer kun referansen.
+      if (e.key === 'Escape' && tool === 'align' && alignRefId) {
+        setAlignRefId(null);
+        return;
+      }
       if (e.key === 'Escape') {
         // Midt i en flytte-/kopier-gest (basispunkt satt): avbryt KUN gesten og behold
         // utvalget/verktøyet, slik at man kan prøve et nytt basispunkt med det samme.
@@ -480,7 +490,8 @@ export function PdfCanvas() {
           tool === 'move' ||
           tool === 'copy' ||
           tool === 'split' ||
-          tool === 'trimextend';
+          tool === 'trimextend' ||
+          tool === 'align';
         if (inDrawingTool) {
           setTool('select');
         } else {
@@ -563,10 +574,11 @@ export function PdfCanvas() {
         !e.metaKey &&
         !e.altKey &&
         !e.repeat &&
-        ['v', 'f', 'c', 'd', 'a', 'r', 'k', 't'].includes(e.key.toLowerCase())
+        ['v', 'f', 'c', 'd', 'a', 'r', 'k', 't', 'j'].includes(e.key.toLowerCase())
       ) {
         // Ett-tasts hurtigtaster (norske mnemonikker): V velg, F flytt, C kopier,
-        // D del, A avstand, R rør, K kanal, T trim/forleng (fri, matcher Revits TR).
+        // D del, A avstand, R rør, K kanal, T trim/forleng (fri, matcher Revits TR),
+        // J juster (Align – fri, «juster» er det norske Revit-navnet for verktøyet).
         // R/K armerer sist brukte type av den arten – trykkes de igjen sykles det
         // gjennom «sist brukt».
         const k = e.key.toLowerCase();
@@ -575,6 +587,7 @@ export function PdfCanvas() {
         else if (k === 'c') { e.preventDefault(); setTool('copy'); }
         else if (k === 'd') { e.preventDefault(); setTool('split'); }
         else if (k === 't') { e.preventDefault(); setTool('trimextend'); }
+        else if (k === 'j') { e.preventDefault(); setTool('align'); }
         else if (k === 'a') { e.preventDefault(); setTool('measure:distance'); }
         else if (k === 'r' || k === 'k') {
           e.preventDefault();
@@ -671,6 +684,8 @@ export function PdfCanvas() {
     setCanvasMenu,
     trimBoundaryId,
     setTrimBoundaryId,
+    alignRefId,
+    setAlignRefId,
   ]);
 
   // Hold inne Mellomrom for å panorere (dra med venstre knapp), uansett aktivt
@@ -1628,6 +1643,79 @@ export function PdfCanvas() {
         // trimmes/forlenges mot samme grense uten å velge den på nytt.
         return;
       }
+      if (tool === 'align') {
+        // Klikk 1: velg referanselinja (definerer retningen). Klikk 2: velg målet
+        // (rør/kanal ELLER utstyr) som skal flyttes vinkelrett inntil den – ren
+        // translasjon, ingen rotasjon. Samme «bli stående armert»-mønster som
+        // Trim/Forleng over, slik at flere objekter kan justeres mot samme referanse.
+        const pageLines = lines.filter((l) => l.page === currentPage);
+        const hitLine = findNearestLine(pageLines, p, scale.metersPerPixel, invScale);
+        if (!alignRefId) {
+          if (hitLine) setAlignRefId(hitLine.line.id);
+          return;
+        }
+        const ref = pageLines.find((l) => l.id === alignRefId);
+        if (!ref) {
+          // Referansen ble slettet e.l. i mellomtiden – behandle klikket som et nytt
+          // forsøk på å velge referanse, samme gjenopprettingsmønster som Trim/Forleng.
+          setAlignRefId(hitLine ? hitLine.line.id : null);
+          return;
+        }
+        // Målet er enten en annen linje (unntatt referansen selv) eller et utstyr –
+        // samme nærmeste-punkt-treff som symbolplassering bruker for utstyr.
+        let target: { kind: 'line' | 'symbol'; id: string } | null = null;
+        if (hitLine && hitLine.line.id !== alignRefId) {
+          target = { kind: 'line', id: hitLine.line.id };
+        } else {
+          let bestSym: { id: string; d: number } | null = null;
+          for (const sym of symbols) {
+            if (sym.page !== currentPage) continue;
+            const d = distance(p.x, p.y, sym.x, sym.y);
+            const tol = 20 * invScale;
+            if (d <= tol && (!bestSym || d < bestSym.d)) bestSym = { id: sym.id, d };
+          }
+          if (bestSym) target = { kind: 'symbol', id: bestSym.id };
+        }
+        if (!target) return; // ingen gyldig mål under klikket – referansen forblir armert
+
+        const rn = ref.points.length;
+        const rStart = { x: ref.points[0], y: ref.points[1] };
+        const rEnd = { x: ref.points[rn - 2], y: ref.points[rn - 1] };
+        const theta = Math.atan2(rEnd.y - rStart.y, rEnd.x - rStart.x);
+        const normal = { x: -Math.sin(theta), y: Math.cos(theta) };
+
+        let P: { x: number; y: number };
+        if (target.kind === 'line') {
+          const tLine = lines.find((l) => l.id === target!.id);
+          const cp = tLine ? closestPointOnPolyline(tLine.points, p) : null;
+          if (!tLine || !cp) return;
+          P = { x: cp.x, y: cp.y };
+        } else {
+          const sym = symbols.find((s) => s.id === target!.id);
+          if (!sym) return;
+          P = { x: sym.x, y: sym.y };
+        }
+        // Fortegnet avstand fra referansens uendelige akse, langs normalen – forskyvningen
+        // som nuller den ut er akkurat -s ganger normalen (uansett hvilket punkt R på
+        // referansen man måler fra, siden det kun er den vinkelrette komponenten som teller).
+        const s = (P.x - rStart.x) * normal.x + (P.y - rStart.y) * normal.y;
+        const dx = -s * normal.x;
+        const dy = -s * normal.y;
+        if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return; // allerede flukt
+
+        select(target.id, target.kind);
+        beginHistoryBatch();
+        try {
+          moveSelection(dx, dy, true);
+          // Kobler målet til det den nå lander inntil, akkurat som Flytt/Kopier –
+          // begrenset til målets egne linjer siden Align kun flytter én ting av gangen.
+          connectLandedEndpoints(target.kind === 'line' ? new Set([target.id]) : new Set());
+        } finally {
+          endHistoryBatch();
+        }
+        // Referansen forblir armert – flere objekter kan justeres mot samme referanse.
+        return;
+      }
       if (isMeasureTool && measureType) {
         // Rektangulær arealmåling: klikk-flytt-klikk (hybrid med dra). Andre klikk fullfører.
         if (measureType === 'area' && areaMeasureMode === 'rect') {
@@ -1734,6 +1822,11 @@ export function PdfCanvas() {
       beginHistoryBatch,
       endHistoryBatch,
       setError,
+      alignRefId,
+      symbols,
+      select,
+      moveSelection,
+      connectLandedEndpoints,
     ],
   );
 
@@ -2197,7 +2290,8 @@ export function PdfCanvas() {
             isMeasureTool ||
             tool === 'calibrate' ||
             tool === 'split' ||
-            tool === 'trimextend'
+            tool === 'trimextend' ||
+            tool === 'align'
           ? 'crosshair'
           : 'default';
 
@@ -3234,6 +3328,24 @@ export function PdfCanvas() {
               return (
                 <Line
                   points={boundary.points}
+                  stroke="#f5a623"
+                  strokeWidth={10 * invScale}
+                  opacity={0.35}
+                  lineCap="round"
+                  lineJoin="round"
+                  listening={false}
+                />
+              );
+            })()}
+          {alignRefId &&
+            (() => {
+              const ref = lines.find((l) => l.id === alignRefId && l.page === currentPage);
+              if (!ref) return null;
+              // Samme «armert så lenge verktøyet holder den»-visning som Trim/Forlengs
+              // grense over – referansen forblir uthevet gjennom flere justeringer.
+              return (
+                <Line
+                  points={ref.points}
                   stroke="#f5a623"
                   strokeWidth={10 * invScale}
                   opacity={0.35}

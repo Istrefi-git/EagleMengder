@@ -18,6 +18,7 @@ import {
   Highlighter,
   LandPlot,
   LibraryBig,
+  Magnet,
   Minus,
   MessageSquareText,
   MousePointer2,
@@ -231,6 +232,12 @@ export function Toolbar() {
           label="Trim/Forleng"
           icon={Slice}
           title="Trim/Forleng (T) – klikk en grense, klikk deretter røret/kanalen som skal kuttes ved eller strekkes til den. Grensen blir stående armert til Escape."
+        />
+        <ToolButton
+          mode="align"
+          label="Juster"
+          icon={Magnet}
+          title="Juster (J) – klikk en referanselinje, klikk deretter det som skal flyttes (rør/kanal eller utstyr). Flyttes vinkelrett inntil referansen, uten rotasjon. Referansen blir stående armert til Escape."
         />
       </div>
 

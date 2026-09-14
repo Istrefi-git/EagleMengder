@@ -34,6 +34,11 @@ function getHint(tool: string): string | null {
       'Klikk grensen først, deretter røret/kanalen som skal kuttes eller strekkes · ' +
       'grensen blir stående til Esc · Esc igjen går til Velg'
     );
+  if (tool === 'align')
+    return (
+      'Klikk referanselinja først, deretter det som skal flyttes (rør/kanal eller utstyr) · ' +
+      'flyttes vinkelrett inntil, uten rotasjon · referansen blir stående til Esc · Esc igjen går til Velg'
+    );
   if (tool === 'tag') return 'Klikk på et rør, en kanal eller en komponent for å merke det';
   if (tool === 'select')
     return (
