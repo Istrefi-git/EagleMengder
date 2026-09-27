@@ -6,7 +6,7 @@ import { ProjectFormModal, type ProjectFormValues } from '../components/site/Pro
 import { TilbudFormModal } from '../components/site/TilbudFormModal';
 import { useCurrentUser } from '../lib/authStore';
 import { useProjectsStore, type Tilbud } from '../lib/projectsStore';
-import { copyPdfBytes, deletePdfBytes } from '../lib/pdfStorage';
+import { copyAllPdfBytes, deleteAllPdfBytes, pdfIdsForSnapshot } from '../lib/pdfStorage';
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('nb-NO', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -49,15 +49,16 @@ export default function ProjectDetail() {
     const t = duplicateTilbudDrawing(copySource.id, name);
     setCopySource(null);
     if (!t) return;
-    await copyPdfBytes(copySource.id, t.id);
+    await copyAllPdfBytes(copySource.id, t.id, pdfIdsForSnapshot(t.snapshot));
     navigate(`/projects/${proj.id}/tilbud/${t.id}`);
   }
 
   function onDeleteTilbud(id: string, name: string, e: React.MouseEvent) {
     e.stopPropagation();
     if (window.confirm(`Slette tilbudet «${name}»? Mengdedata og opplastet tegning forsvinner.`)) {
+      const t = tilbudList.find((x) => x.id === id);
       deleteTilbud(id);
-      void deletePdfBytes(id);
+      void deleteAllPdfBytes(id, pdfIdsForSnapshot(t?.snapshot));
     }
   }
 

@@ -9,19 +9,21 @@ import {
   Maximize2,
   Minus,
   Moon,
+  Pencil,
   Printer,
   Redo2,
   Ruler,
   ScanSearch,
   Settings2,
   Sun,
+  Trash2,
   Undo2,
   Upload,
 } from 'lucide-react';
 import { useStore } from '../store';
 import { detectScaleFromPdf, loadPdf } from '../lib/pdf';
-import { savePdfBytes } from '../lib/pdfStorage';
-import { buildQuantityReport } from '../lib/quantityReport';
+import { savePdfBytes, deletePdfBytes } from '../lib/pdfStorage';
+import { buildQuantityReportsByDrawing } from '../lib/quantityReport';
 import { groupQuantity } from '../lib/quantityGroups';
 import { downloadQuantityExcel } from '../lib/exportExcel';
 import { captureDrawingDataUrl } from '../lib/stageCapture';
@@ -38,12 +40,15 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const fileName = useStore((s) => s.fileName);
   const numPages = useStore((s) => s.numPages);
   const currentPage = useStore((s) => s.currentPage);
+  const drawings = useStore((s) => s.drawings);
   const isLoading = useStore((s) => s.isLoading);
   const scale = useStore((s) => s.scale);
   const view = useStore((s) => s.view);
 
   const beginLoad = useStore((s) => s.beginLoad);
-  const loadDocument = useStore((s) => s.loadDocument);
+  const addPdf = useStore((s) => s.addPdf);
+  const renameDrawing = useStore((s) => s.renameDrawing);
+  const removeDrawing = useStore((s) => s.removeDrawing);
   const setError = useStore((s) => s.setError);
   const setPage = useStore((s) => s.setPage);
   const zoomBy = useStore((s) => s.zoomBy);
@@ -70,58 +75,89 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   const quantityGroupBy = useStore((s) => s.quantityGroupBy);
   const quantitySortBy = useStore((s) => s.quantitySortBy);
   const quantitySortDir = useStore((s) => s.quantitySortDir);
-  const pageWidth = useStore((s) => s.pageWidth);
-  const pageHeight = useStore((s) => s.pageHeight);
-  const setPrintImage = useStore((s) => s.setPrintImage);
+  const setPrintSections = useStore((s) => s.setPrintSections);
   const hasData = lines.length > 0 || symbols.length > 0;
 
   function exportExcel() {
-    const report = buildQuantityReport(
+    // Én rapport per tegning (egen målestokk hver) – se buildQuantityReportsByDrawing.
+    const byDrawing = buildQuantityReportsByDrawing(
+      drawings,
       lines,
       symbols,
       transitions,
       branches,
-      scale,
       standardLengths,
       bends,
       clamps,
       customComponents,
     );
-    // Samme gruppering/sortering som brukeren har valgt i mengdelisten (QuantityPanel),
-    // slik at eksporten alltid stemmer med det som vises på skjermen.
-    const groups = groupQuantity(report, {
+    // Totalen slår sammen RADENE (allerede i mm, altså skala-uavhengige) fra alle
+    // tegningene – IKKE en ny rapport bygget fra de rå, sammenslåtte entitetene, som
+    // ville vært feil så snart to tegninger har ulik målestokk.
+    const totalGroups = groupQuantity({ rows: byDrawing.flatMap((d) => d.report.rows) }, {
       groupBy: quantityGroupBy,
       sortBy: quantitySortBy,
       sortDir: quantitySortDir,
     });
-    downloadQuantityExcel(groups, tilbudName);
+    const perDrawing = byDrawing.map((d) => ({
+      name: d.drawingName,
+      groups: groupQuantity(d.report, { groupBy: quantityGroupBy, sortBy: quantitySortBy, sortDir: quantitySortDir }),
+    }));
+    downloadQuantityExcel(totalGroups, perDrawing, tilbudName);
   }
 
-  /** Fanger hele tegningen som bilde FØR utskrift, slik at PrintableReport kan vise
-   * den på egen side foran mengdeliste-tabellen. window.print() plukker kun opp det
-   * som ALLEREDE er malt OG DEKODET i DOM-en: to requestAnimationFrame gir React tid
-   * til å rendre <img>, og img.decode() venter til selve data-URL-en er dekodet –
-   * uten dette kunne utskriften starte mot et tomt/udekodet bilde. */
-  async function printReport() {
-    const dataUrl = captureDrawingDataUrl(pageWidth > 0 && pageHeight > 0 ? { width: pageWidth, height: pageHeight } : null);
-    setPrintImage(dataUrl);
+  /** Fanger tegningen for ÉN gitt tegning (side.width/height leses FRISKT fra
+   * store-tilstanden, ikke fra denne komponentens props/state, siden funksjonen
+   * kalles midt i en løkke som bytter aktiv tegning – se printReport). */
+  function captureCurrentDrawing(): string | null {
+    const s = useStore.getState();
+    return captureDrawingDataUrl(s.pageWidth > 0 && s.pageHeight > 0 ? { width: s.pageWidth, height: s.pageHeight } : null);
+  }
 
-    if (dataUrl) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      const img = document.querySelector<HTMLImageElement>('.printable-drawing img');
-      if (img) {
-        try {
-          await img.decode();
-        } catch {
-          // Dekodefeil skal ikke blokkere utskrift av selve mengdelisten.
+  /** Fanger ETT bilde per tegning FØR utskrift, slik at PrintableReport kan vise en
+   * egen seksjon (bilde + mengdeliste) per tegning i tillegg til totalen. Bytter
+   * aktiv tegning fram og tilbake for å få riktig sidebilde/entiteter montert for
+   * hver – med en kort ventetid per bytte for at PdfCanvas' asynkrone PDF-side-
+   * rendring (renderPage → setPageImage) skal rekke å fullføre. Gjenoppretter
+   * opprinnelig aktiv tegning til slutt, uansett utfall. window.print() plukker kun
+   * opp det som ALLEREDE er malt OG DEKODET i DOM-en: to requestAnimationFrame gir
+   * React tid til å rendre <img>-ene, og img.decode() venter til data-URL-ene er
+   * dekodet – uten dette kunne utskriften startet mot tomme/udekodede bilder. */
+  async function printReport() {
+    const originalPage = currentPage;
+    const sections: { drawingId: number; image: string | null }[] = [];
+    try {
+      for (const d of drawings) {
+        if (d.id !== originalPage) {
+          setPage(d.id);
+          await new Promise((r) => setTimeout(r, 350));
         }
+        sections.push({ drawingId: d.id, image: captureCurrentDrawing() });
+      }
+    } finally {
+      if (drawings.some((d) => d.id === originalPage)) {
+        setPage(originalPage);
+        await new Promise((r) => setTimeout(r, 350));
       }
     }
+    setPrintSections(sections);
 
-    // Ikke nullstill bildet før utskriften faktisk er ferdig – gjør man det rett
-    // etter window.print() kan siden rekke å re-rendre uten tegningen mens
+    if (sections.some((s) => s.image)) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const imgs = document.querySelectorAll<HTMLImageElement>('.printable-drawing img');
+      await Promise.all(
+        Array.from(imgs).map((img) =>
+          img.decode().catch(() => {
+            // Dekodefeil skal ikke blokkere utskrift av selve mengdelisten.
+          }),
+        ),
+      );
+    }
+
+    // Ikke nullstill bildene før utskriften faktisk er ferdig – gjør man det rett
+    // etter window.print() kan siden rekke å re-rendre uten tegningene mens
     // utskriftsdialogen fortsatt er åpen.
-    const clear = () => setPrintImage(null);
+    const clear = () => setPrintSections(null);
     window.addEventListener('afterprint', clear, { once: true });
     // Sikkerhetsnett: noen nettlesere/plattformer fyrer aldri afterprint.
     window.setTimeout(() => {
@@ -132,18 +168,22 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     beginLoad();
     try {
-      const buf = await file.arrayBuffer();
-      // Kopier bytes til IndexedDB-lagring FØR pdf.js får dem – getDocument()
-      // overfører/nuller ofte den originale ArrayBuffer-en til sin worker.
-      const bytesForStorage = buf.slice(0);
-      const doc = await loadPdf(buf);
-      const detected = await detectScaleFromPdf(doc);
-      loadDocument(doc, file.name, doc.numPages, detected);
-      void savePdfBytes(tilbudId, bytesForStorage);
+      // Flere filer kan lastes opp samtidig – hver blir en ny tegning (eller flere,
+      // ved en flersidig PDF), UTEN å røre tegninger som allerede finnes.
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        // Kopier bytes til IndexedDB-lagring FØR pdf.js får dem – getDocument()
+        // overfører/nuller ofte den originale ArrayBuffer-en til sin worker.
+        const bytesForStorage = buf.slice(0);
+        const doc = await loadPdf(buf);
+        const detected = await detectScaleFromPdf(doc);
+        const pdfId = addPdf(doc, file.name, doc.numPages, detected);
+        void savePdfBytes(tilbudId, pdfId, bytesForStorage);
+      }
     } catch (err) {
       setError(`Kunne ikke åpne PDF: ${(err as Error).message}`);
     } finally {
@@ -181,27 +221,76 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
           ref={fileInput}
           type="file"
           accept="application/pdf,.pdf"
+          multiple
           hidden
           onChange={onFile}
         />
-        {fileName && <span className="file-name" title={fileName}>{fileName}</span>}
       </div>
 
-      {numPages > 0 && (
+      {drawings.length > 0 && (
         <div className="topbar-group pager">
-          <button className="btn icon" onClick={() => setPage(currentPage - 1)} disabled={currentPage <= 1}>
-            <ChevronLeft size={15} />
-          </button>
-          <span className="page-indicator">
-            Side {currentPage} / {numPages}
-          </span>
           <button
             className="btn icon"
-            onClick={() => setPage(currentPage + 1)}
-            disabled={currentPage >= numPages}
+            onClick={() => {
+              const i = drawings.findIndex((d) => d.id === currentPage);
+              if (i > 0) setPage(drawings[i - 1].id);
+            }}
+            disabled={drawings.findIndex((d) => d.id === currentPage) <= 0}
+            title="Forrige tegning"
+          >
+            <ChevronLeft size={15} />
+          </button>
+          <select
+            className="drawing-select"
+            value={currentPage}
+            onChange={(e) => setPage(Number(e.target.value))}
+            title={fileName ?? undefined}
+          >
+            {drawings.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn icon"
+            onClick={() => {
+              const i = drawings.findIndex((d) => d.id === currentPage);
+              if (i >= 0 && i < drawings.length - 1) setPage(drawings[i + 1].id);
+            }}
+            disabled={drawings.findIndex((d) => d.id === currentPage) >= drawings.length - 1}
+            title="Neste tegning"
           >
             <ChevronRight size={15} />
           </button>
+          <span className="page-indicator">
+            {drawings.findIndex((d) => d.id === currentPage) + 1} / {drawings.length}
+          </span>
+          <IconMenu icon={Pencil} label="Tegning">
+            <span className="icon-menu-heading">{fileName}</span>
+            <button
+              className="icon-menu-item"
+              onClick={() => {
+                const name = window.prompt('Nytt navn på tegningen', fileName ?? '');
+                if (name && name.trim()) renameDrawing(currentPage, name.trim());
+              }}
+            >
+              <Pencil size={14} />
+              Gi nytt navn
+            </button>
+            <button
+              className="icon-menu-item danger"
+              onClick={() => {
+                if (window.confirm(`Fjerne tegningen «${fileName}»? Alt tegnet på den forsvinner.`)) {
+                  const orphanedPdfId = removeDrawing(currentPage);
+                  if (orphanedPdfId) void deletePdfBytes(tilbudId, orphanedPdfId);
+                }
+              }}
+            >
+              <Trash2 size={14} />
+              Fjern tegning
+            </button>
+          </IconMenu>
         </div>
       )}
 

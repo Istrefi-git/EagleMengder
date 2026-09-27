@@ -105,6 +105,10 @@ export function PdfCanvas() {
 
   const pdfDoc = useStore((s) => s.pdfDoc);
   const currentPage = useStore((s) => s.currentPage);
+  // `currentPage` er den AKTIVE TEGNINGENS id, ikke et rått PDF-sidetall (se
+  // DrawingEntity i types.ts) – sidebildet må derfor rendres fra tegningens EGEN
+  // `pdfPage` inn i `pdfDoc` (samme pdfDoc for alle sider av samme opplastede fil).
+  const activePdfPage = useStore((s) => s.drawings.find((d) => d.id === s.currentPage)?.pdfPage ?? 1);
   const pageImage = useStore((s) => s.pageImage);
   const pageWidth = useStore((s) => s.pageWidth);
   const pageHeight = useStore((s) => s.pageHeight);
@@ -420,7 +424,7 @@ export function PdfCanvas() {
   useEffect(() => {
     if (!pdfDoc) return;
     let cancelled = false;
-    renderPage(pdfDoc, currentPage)
+    renderPage(pdfDoc, activePdfPage)
       .then(({ canvas, width, height }) => {
         if (cancelled) return;
         setPageImage(canvas, width, height);
@@ -433,7 +437,7 @@ export function PdfCanvas() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, currentPage]);
+  }, [pdfDoc, currentPage, activePdfPage]);
 
   // Tilpass på forespørsel (knapp i topbar)
   useEffect(() => {

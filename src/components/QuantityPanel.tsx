@@ -12,12 +12,19 @@ import { formatMm } from '../lib/scale';
 const IMPLICIT_TYPES = new Set(['Kanallengde', 'Rørlengde', 'Komponent']);
 
 export function QuantityPanel() {
-  const lines = useStore((s) => s.lines);
-  const symbols = useStore((s) => s.symbols);
-  const transitions = useStore((s) => s.transitions);
-  const branches = useStore((s) => s.branches);
-  const bends = useStore((s) => s.bends);
-  const clamps = useStore((s) => s.clamps);
+  const currentPage = useStore((s) => s.currentPage);
+  const fileName = useStore((s) => s.fileName);
+  const drawingCount = useStore((s) => s.drawings.length);
+  // Mengdelisten viser KUN den aktive tegningens egne mengder (med dens egen
+  // målestokk, allerede holdt i synk i `s.scale` – se setPage i store.ts). Uten dette
+  // filteret ville f.eks. to tegninger i ulik målestokk blitt lagt sammen med kun ÉN
+  // av dem sin målestokk, med feil lengder som resultat – se PLAN.md «Flere tegninger».
+  const lines = useStore((s) => s.lines.filter((l) => l.page === currentPage));
+  const symbols = useStore((s) => s.symbols.filter((sy) => sy.page === currentPage));
+  const transitions = useStore((s) => s.transitions.filter((t) => t.page === currentPage));
+  const branches = useStore((s) => s.branches.filter((b) => b.page === currentPage));
+  const bends = useStore((s) => s.bends.filter((b) => b.page === currentPage));
+  const clamps = useStore((s) => s.clamps.filter((c) => c.page === currentPage));
   const customComponents = useStore((s) => s.customComponents);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
@@ -58,7 +65,11 @@ export function QuantityPanel() {
   return (
     <section className="quantity-panel">
       <div className="panel-header">
-        <h3>Mengdeliste</h3>
+        <h3>
+          Mengdeliste
+          {/* Kun ved flere tegninger – ellers er navnet støy alle allerede vet. */}
+          {drawingCount > 1 && fileName && <span className="panel-subheading"> · {fileName}</span>}
+        </h3>
         <div className="panel-header-actions">
           {mpp == null && <span className="badge warn">Sett målestokk</span>}
           <button

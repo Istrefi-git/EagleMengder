@@ -106,6 +106,54 @@ function pushId(map: Record<string, string[]>, key: string, id: string) {
   (map[key] ??= []).push(id);
 }
 
+/** Én tegnings egen mengderapport – bygget fra KUN dens egne entiteter (filtrert på
+ * `page === drawing.id`) og dens EGEN målestokk. To tegninger er sjelden i samme
+ * målestokk, så en tegnings lengder må regnes ut med sin egen `scale` – man kan ikke
+ * slå sammen rå (upikselomregnede) linjer fra flere tegninger og gange med bare ÉN
+ * global målestokk til slutt. */
+export interface DrawingQuantityReport {
+  drawingId: number;
+  drawingName: string;
+  report: QuantityReport;
+}
+
+/** Bygger én QuantityReport per tegning (se DrawingQuantityReport over). Brukt av
+ * Excel-eksportens «Per tegning»-fane og PDF-rapportens seksjoner. En riktig TOTAL på
+ * tvers av tegninger med ulik målestokk fås ved å slå sammen `report.rows` fra alle
+ * tegningene (allerede i mm, altså skala-uavhengig på dette punktet) og kjøre dem
+ * gjennom `groupQuantity` – IKKE ved å bygge én ny QuantityReport fra de rå,
+ * sammenslåtte entitetene. */
+export function buildQuantityReportsByDrawing(
+  drawings: { id: number; name: string; scale: ScaleState }[],
+  lines: LineEntity[],
+  symbols: SymbolEntity[],
+  transitions: TransitionEntity[],
+  branches: BranchEntity[],
+  standardLengths: { pipe: number; duct: number },
+  bends: BendEntity[] = [],
+  clamps: ClampEntity[] = [],
+  customComponents: CustomComponentDef[] = [],
+): DrawingQuantityReport[] {
+  return drawings.map((d) => {
+    const onPage = <T extends { page: number }>(arr: T[]) => arr.filter((x) => x.page === d.id);
+    return {
+      drawingId: d.id,
+      drawingName: d.name,
+      report: buildQuantityReport(
+        onPage(lines),
+        onPage(symbols),
+        onPage(transitions),
+        onPage(branches),
+        d.scale,
+        standardLengths,
+        onPage(bends),
+        onPage(clamps),
+        customComponents,
+      ),
+    };
+  });
+}
+
 export function buildQuantityReport(
   lines: LineEntity[],
   symbols: SymbolEntity[],

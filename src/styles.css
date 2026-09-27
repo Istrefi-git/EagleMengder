@@ -271,6 +271,18 @@ body {
   color: var(--text-dim);
   font-size: 13px;
 }
+.drawing-select {
+  max-width: 180px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.drawing-select:focus {
+  outline: none;
+}
 .pager,
 .zoomer {
   background: var(--bg-3);
@@ -440,6 +452,10 @@ body {
 .icon-menu-item:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.icon-menu-item.danger:hover:not(:disabled) {
+  background: rgba(212, 85, 63, 0.2);
+  color: #ff9b8a;
 }
 
 .scale-pill {
@@ -1513,6 +1529,12 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--text-dim);
+}
+.panel-subheading {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  opacity: 0.75;
 }
 .panel-header h3::before {
   content: '';

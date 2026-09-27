@@ -65,11 +65,19 @@ function buildAutoScale(denominator: number): ScaleState {
   };
 }
 
-/** Søker gjennom sidetekst (i sidenummer-orden) etter en målestokk. */
-export async function detectScaleFromPdf(doc: PdfDoc, maxPages = 25): Promise<ScaleState | null> {
-  const pageCount = Math.min(doc.numPages, maxPages);
+/** Søker gjennom sidetekst (i sidenummer-orden) etter en målestokk. Oppgis `onlyPage`
+ * (1-basert), søkes det KUN i den ene siden – brukt til å gjenoppfriske målestokken
+ * for én bestemt tegning (se rescanAutoScale i store.ts), i stedet for å skanne hele
+ * PDF-en på nytt og risikere å plukke opp en annen sides målestokk. */
+export async function detectScaleFromPdf(
+  doc: PdfDoc,
+  maxPages = 25,
+  onlyPage?: number,
+): Promise<ScaleState | null> {
+  const pageNumbers =
+    onlyPage != null ? [onlyPage] : Array.from({ length: Math.min(doc.numPages, maxPages) }, (_, i) => i + 1);
   let fallback: number | null = null;
-  for (let i = 1; i <= pageCount; i++) {
+  for (const i of pageNumbers) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
     const text = content.items.map((it) => ('str' in it ? it.str : '')).join(' ');

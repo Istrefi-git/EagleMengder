@@ -8,6 +8,7 @@ import type {
   ClampEntity,
   DuctCapEntity,
   CustomComponentDef,
+  DrawingEntity,
   LineEntity,
   LineStyleId,
   MeasurementEntity,
@@ -1069,6 +1070,9 @@ export interface DrawSnapshot {
   clamps: ClampEntity[];
   caps: DuctCapEntity[];
   measurements: MeasurementEntity[];
+  /** Med (fjerne en tegning er ellers ikke angrebart – tegningslisten var ikke en del
+   * av angre-historikken før dette). */
+  drawings: DrawingEntity[];
 }
 
 const MAX_HISTORY = 50;
@@ -1299,9 +1303,22 @@ function persistSettings(s: AppState, overrides: Partial<PersistedSettings> = {}
 
 interface AppState {
   // Dokument
+  /** Alle tegninger i tilbudet (hver som regel én side av en opplastet PDF) – se
+   * DrawingEntity i types.ts. `currentPage` er id-en til DEN AKTIVE av dem; alle
+   * eksisterende `entity.page === currentPage`-filtre i appen virker derfor uendret. */
+  drawings: DrawingEntity[];
+  /** Rå pdf.js-dokumenter, nøklet på DrawingEntity.pdfId – kan holde FLERE opplastede
+   * PDF-er samtidig (ett tilbud kan ha tegninger fra flere filer). */
+  pdfDocs: Record<string, PdfDoc>;
+  /** Bekvemmelighetsfelt = pdfDocs[aktivTegning.pdfId] ?? null, holdt i synk av
+   * setPage/addPdf/attachPdfDocs – gjør at all eksisterende kode som leser `s.pdfDoc`
+   * (f.eks. «er noen tegning lastet»-sjekker) fortsatt virker uendret. */
   pdfDoc: PdfDoc | null;
+  /** = aktiv tegnings navn (DrawingEntity.name), eller null uten noen tegning. */
   fileName: string | null;
+  /** = drawings.length. */
   numPages: number;
+  /** Id-en til DEN AKTIVE tegningen (DrawingEntity.id) – IKKE et rått PDF-sidetall. */
   currentPage: number;
   pageImage: HTMLCanvasElement | null;
   pageWidth: number;
@@ -1436,25 +1453,38 @@ interface AppState {
   // Tilpass-til-skjerm-signal (økes for å be canvas refitte)
   fitSignal: number;
 
-  /** Fanget PNG (data-URL) av hele tegningen, satt rett før «Skriv ut / PDF» kalles –
-   * PrintableReport viser den øverst i utskriften. Nullstilles etterpå (ikke persistert,
-   * kun et forbigående utskrifts-øyeblikksbilde). */
-  printImage: string | null;
+  /** Fangede PNG-er (data-URL), ett per tegning (matchet på `drawingId`), satt rett
+   * før «Skriv ut / PDF» kalles – PrintableReport viser dem i hver sin seksjon i
+   * utskriften. Nullstilles etterpå (ikke persistert, kun et forbigående
+   * utskrifts-øyeblikksbilde). */
+  printSections: { drawingId: number; image: string | null }[] | null;
 
   // Actions
   beginLoad: () => void;
-  loadDocument: (
-    doc: PdfDoc,
-    fileName: string,
-    numPages: number,
-    detected: ScaleState | null,
-  ) => void;
+  /** Legger til en NYLIG opplastet PDF som én ny tegning per side – i MOTSETNING til
+   * gamle loadDocument sletter denne INGENTING (andre tegningers linjer/symboler/
+   * annotasjoner osv. er upåvirket, siden de er skilt på `page`). Aktiverer den
+   * første nye siden. `detected` (samme verdi for alle nye sider – se PLAN.md C-Flere
+   * tegninger) kan justeres per tegning etterpå via ScaleDialog. */
+  /** Returnerer den nye pdfId-en, slik at kalleren kan lagre PDF-bytene under den
+   * (se lib/pdfStorage.ts – TopBar.onFile). */
+  addPdf: (doc: PdfDoc, fileName: string, numPages: number, detected: ScaleState | null) => string;
+  /** Gir en tegning nytt navn. */
+  renameDrawing: (id: number, name: string) => void;
+  /** Fjerner én tegning: alle dens entiteter (linjer/symboler/annotasjoner/tagger/
+   * klammer/blendinger/målinger) slettes, og selve tegningen fjernes fra listen. Var
+   * den aktive, aktiveres en annen (eller ingen, er det den siste). Returnerer
+   * pdfId-en HVIS ingen annen tegning lenger bruker den PDF-en (kalleren kan da også
+   * slette selve PDF-bytene, se lib/pdfStorage.ts) – ellers null. */
+  removeDrawing: (id: number) => string | null;
   setError: (msg: string) => void;
   setPageImage: (canvas: HTMLCanvasElement, w: number, h: number) => void;
+  /** Bytter aktiv tegning (n = DrawingEntity.id, IKKE et rått PDF-sidetall). */
   setPage: (n: number) => void;
   rescanAutoScale: () => Promise<void>;
-  /** Setter et gjenopprettet PDF-dokument uten å nullstille mengdedata (brukes ved gjenåpning av tilbud). */
-  attachPdfDoc: (doc: PdfDoc, numPages: number) => void;
+  /** Setter gjenopprettede PDF-dokumenter uten å nullstille mengdedata (brukes ved
+   * gjenåpning av tilbud) – ett per pdfId som forekommer i `drawings`. */
+  attachPdfDocs: (docs: Record<string, PdfDoc>) => void;
 
   setScale: (s: ScaleState) => void;
   openScaleDialog: (tab: 'auto' | 'manual' | 'calibrate') => void;
@@ -1694,7 +1724,7 @@ interface AppState {
   setStageSize: (size: { width: number; height: number }) => void;
   zoomBy: (factor: number) => void;
   requestFit: () => void;
-  setPrintImage: (dataUrl: string | null) => void;
+  setPrintSections: (sections: { drawingId: number; image: string | null }[] | null) => void;
 
   /** Henter alt som kan lagres som JSON for det aktive tilbudet (ikke PDF-bytes/canvas). */
   exportSnapshot: () => TilbudSnapshot;
@@ -1721,9 +1751,30 @@ export interface TilbudSnapshot {
   fileName: string | null;
   numPages: number;
   currentPage: number;
+  /** Nytt felt (flere tegninger). Fravær (eldre lagrede tilbud) migreres i
+   * importSnapshot til én tegning per side av den gamle enkelt-PDF-en. */
+  drawings?: DrawingEntity[];
 }
 
 const initialScale: ScaleState = { metersPerPixel: null, label: 'Ikke satt', source: 'none' };
+/** Bygger `drawings` for et eldre lagret tilbud (fra FØR flere-tegninger-støtten) –
+ * én tegning per side av den gamle enkelt-PDF-en, med tilbudets tidligere globale
+ * målestokk kopiert inn på hver. `pdfId: 'legacy'` er en reservert verdi
+ * lib/pdfStorage.ts kjenner igjen og slår opp PDF-bytene for på den GAMLE
+ * bare-tilbudId-nøkkelen (bytene flyttes aldri fysisk – kun denne ene mappingen
+ * peker tilbake til dem). Id-ene starter på 1, akkurat som de gamle side-tallene,
+ * slik at eksisterende `entity.page`-verdier treffer riktig tegning uendret. */
+function migrateDrawings(snapshot: TilbudSnapshot): DrawingEntity[] {
+  if (snapshot.drawings) return snapshot.drawings;
+  if (!snapshot.fileName || snapshot.numPages < 1) return [];
+  return Array.from({ length: snapshot.numPages }, (_, i) => ({
+    id: i + 1,
+    name: snapshot.numPages > 1 ? `${snapshot.fileName} – side ${i + 1}` : snapshot.fileName!,
+    pdfId: 'legacy',
+    pdfPage: i + 1,
+    scale: snapshot.scale,
+  }));
+}
 /** Legger en type fremst i «sist brukt», deduperer på hele trippelen og kapper lista. */
 function pushRecentLineType(list: RecentLineType[], next: RecentLineType): RecentLineType[] {
   const same = (r: RecentLineType) =>
@@ -1750,6 +1801,7 @@ export const useStore = create<AppState>((set, get) => {
       clamps: s.clamps,
       caps: s.caps,
       measurements: s.measurements,
+      drawings: s.drawings,
     };
     set((st) => ({
       history: { past: [...st.history.past.slice(-(MAX_HISTORY - 1)), snapshot], future: [] },
@@ -1757,6 +1809,8 @@ export const useStore = create<AppState>((set, get) => {
   }
 
   return {
+  drawings: [],
+  pdfDocs: {},
   pdfDoc: null,
   fileName: null,
   numPages: 0,
@@ -1848,50 +1902,109 @@ export const useStore = create<AppState>((set, get) => {
   calibrationDistancePx: null,
 
   fitSignal: 0,
-  printImage: null,
+  printSections: null,
 
   beginLoad: () => set({ isLoading: true, error: null }),
 
-  attachPdfDoc: (doc, numPages) =>
+  attachPdfDocs: (docs) =>
+    set((s) => {
+      const pdfDocs = { ...s.pdfDocs, ...docs };
+      const active = s.drawings.find((d) => d.id === s.currentPage);
+      return {
+        pdfDocs,
+        pdfDoc: active ? (pdfDocs[active.pdfId] ?? null) : null,
+        isLoading: false,
+        error: null,
+      };
+    }),
+
+  addPdf: (doc, fileName, numPages, detected) => {
+    const pdfId = nextId('pdf');
+    set((s) => {
+      const startId = s.drawings.length > 0 ? Math.max(...s.drawings.map((d) => d.id)) + 1 : 1;
+      const newDrawings: DrawingEntity[] = Array.from({ length: numPages }, (_, i) => ({
+        id: startId + i,
+        name: numPages > 1 ? `${fileName} – side ${i + 1}` : fileName,
+        pdfId,
+        pdfPage: i + 1,
+        scale: detected ?? initialScale,
+      }));
+      const first = newDrawings[0];
+      const drawings = [...s.drawings, ...newDrawings];
+      return {
+        pdfDocs: { ...s.pdfDocs, [pdfId]: doc },
+        drawings,
+        pdfDoc: doc,
+        fileName: first.name,
+        numPages: drawings.length,
+        currentPage: first.id,
+        isLoading: false,
+        error: null,
+        selectedId: null,
+        selectedKind: null,
+        multiSelection: new Set<string>(),
+        scale: first.scale,
+        autoDetected: detected,
+      };
+    });
+    return pdfId;
+  },
+
+  renameDrawing: (id, name) =>
     set((s) => ({
-      pdfDoc: doc,
-      numPages,
-      isLoading: false,
-      error: null,
-      currentPage: Math.min(Math.max(1, s.currentPage), numPages || 1),
+      drawings: s.drawings.map((d) => (d.id === id ? { ...d, name } : d)),
+      fileName: s.currentPage === id ? name : s.fileName,
     })),
 
-  loadDocument: (doc, fileName, numPages, detected) =>
-    set({
-      pdfDoc: doc,
-      fileName,
-      numPages,
-      currentPage: 1,
-      isLoading: false,
-      error: null,
-      lines: [],
-      symbols: [],
-      transitions: [],
-      branches: [],
-      bends: [],
-      selectedId: null,
-      selectedKind: null,
-      multiSelection: new Set<string>(),
-      history: { past: [], future: [] },
-      scale: detected ?? initialScale,
-      autoDetected: detected,
-    }),
+  removeDrawing: (id) => {
+    let orphanedPdfId: string | null = null;
+    recordHistory();
+    set((s) => {
+      const removed = s.drawings.find((d) => d.id === id);
+      if (!removed) return {};
+      const drawings = s.drawings.filter((d) => d.id !== id);
+      const stillUsesPdf = drawings.some((d) => d.pdfId === removed.pdfId);
+      if (!stillUsesPdf) orphanedPdfId = removed.pdfId;
+      const pdfDocs = stillUsesPdf ? s.pdfDocs : Object.fromEntries(Object.entries(s.pdfDocs).filter(([k]) => k !== removed.pdfId));
+      const wasActive = s.currentPage === id;
+      const nextActive = wasActive ? (drawings[0] ?? null) : (drawings.find((d) => d.id === s.currentPage) ?? null);
+      return {
+        drawings,
+        pdfDocs,
+        lines: s.lines.filter((l) => l.page !== id),
+        symbols: s.symbols.filter((sy) => sy.page !== id),
+        transitions: s.transitions.filter((t) => t.page !== id),
+        branches: s.branches.filter((b) => b.page !== id),
+        bends: s.bends.filter((b) => b.page !== id),
+        annotations: s.annotations.filter((a) => a.page !== id),
+        tags: s.tags.filter((t) => t.page !== id),
+        clamps: s.clamps.filter((c) => c.page !== id),
+        caps: s.caps.filter((c) => c.page !== id),
+        measurements: s.measurements.filter((m) => m.page !== id),
+        numPages: drawings.length,
+        currentPage: nextActive ? nextActive.id : 1,
+        pdfDoc: nextActive ? (pdfDocs[nextActive.pdfId] ?? null) : null,
+        fileName: nextActive ? nextActive.name : null,
+        scale: nextActive ? nextActive.scale : initialScale,
+        selectedId: null,
+        selectedKind: null,
+        multiSelection: new Set<string>(),
+      };
+    });
+    return orphanedPdfId;
+  },
 
   setError: (msg) => set({ isLoading: false, error: msg }),
 
   setPageImage: (canvas, w, h) => set({ pageImage: canvas, pageWidth: w, pageHeight: h }),
 
   rescanAutoScale: async () => {
-    const { pdfDoc } = get();
+    const { drawings, currentPage, pdfDoc } = get();
     if (!pdfDoc) return;
+    const active = drawings.find((d) => d.id === currentPage);
     set({ isScanning: true });
     try {
-      const detected = await detectScaleFromPdf(pdfDoc);
+      const detected = await detectScaleFromPdf(pdfDoc, 25, active?.pdfPage);
       set({ autoDetected: detected, isScanning: false });
     } catch {
       set({ isScanning: false });
@@ -1899,12 +2012,27 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   setPage: (n) => {
-    const { numPages } = get();
-    const page = Math.min(Math.max(1, n), numPages || 1);
-    set({ currentPage: page, selectedId: null, selectedKind: null, multiSelection: new Set<string>() });
+    const { drawings } = get();
+    const drawing = drawings.find((d) => d.id === n);
+    if (!drawing) return;
+    set((s) => ({
+      currentPage: drawing.id,
+      pdfDoc: s.pdfDocs[drawing.pdfId] ?? null,
+      fileName: drawing.name,
+      scale: drawing.scale,
+      selectedId: null,
+      selectedKind: null,
+      multiSelection: new Set<string>(),
+    }));
   },
 
-  setScale: (s) => set({ scale: s }),
+  setScale: (newScale) =>
+    set((s) => ({
+      scale: newScale,
+      // Målestokk er PER TEGNING – skriv tilbake til den aktive tegningen, ellers
+      // ville et sidebytte hentet den gamle verdien tilbake fra `drawings`.
+      drawings: s.drawings.map((d) => (d.id === s.currentPage ? { ...d, scale: newScale } : d)),
+    })),
   openScaleDialog: (tab) => set({ scaleDialogOpen: true, scaleDialogTab: tab }),
   closeScaleDialog: () =>
     set({ scaleDialogOpen: false, calibrationDistancePx: null, tool: 'select' }),
@@ -2705,9 +2833,15 @@ export const useStore = create<AppState>((set, get) => {
       clamps: s.clamps,
       caps: s.caps,
       measurements: s.measurements,
+      drawings: s.drawings,
     };
     set({
       ...previous,
+      // numPages er avledet av drawings.length, ikke selv en del av DrawSnapshot – må
+      // holdes i synk manuelt her (currentPage/pdfDoc/fileName/scale er bevisst IKKE
+      // en del av angre – de følger den AKTIVE tegningen, ikke selve mengdedataen, og
+      // en angret sletting av en tegning trenger ikke nødvendigvis navigere dit).
+      numPages: previous.drawings.length,
       history: { past: s.history.past.slice(0, -1), future: [current, ...s.history.future] },
       selectedId: null,
       selectedKind: null,
@@ -2730,9 +2864,11 @@ export const useStore = create<AppState>((set, get) => {
       clamps: s.clamps,
       caps: s.caps,
       measurements: s.measurements,
+      drawings: s.drawings,
     };
     set({
       ...next,
+      numPages: next.drawings.length,
       history: { past: [...s.history.past, current], future: s.history.future.slice(1) },
       selectedId: null,
       selectedKind: null,
@@ -3002,7 +3138,7 @@ export const useStore = create<AppState>((set, get) => {
       };
     }),
   requestFit: () => set((s) => ({ fitSignal: s.fitSignal + 1 })),
-  setPrintImage: (dataUrl) => set({ printImage: dataUrl }),
+  setPrintSections: (sections) => set({ printSections: sections }),
 
   exportSnapshot: () => {
     const s = get();
@@ -3023,6 +3159,7 @@ export const useStore = create<AppState>((set, get) => {
       fileName: s.fileName,
       numPages: s.numPages,
       currentPage: s.currentPage,
+      drawings: s.drawings,
     };
   },
 
@@ -3045,6 +3182,9 @@ export const useStore = create<AppState>((set, get) => {
         // starte blankt – ellers må brukeren gjennom typevalget på nytt hver gang.
         lineConfig: loadSettings().lineConfig,
         symbolConfig: {},
+        drawings: [],
+        pdfDocs: {},
+        pdfDoc: null,
         fileName: null,
         numPages: 0,
         currentPage: 1,
@@ -3060,6 +3200,12 @@ export const useStore = create<AppState>((set, get) => {
     const migratedLineConfig = Object.fromEntries(
       Object.entries(snapshot.lineConfig ?? {}).map(([id, v]) => [migrateSubId(id), v]),
     );
+    // Flere-tegninger-migrering: et tilbud lagret FØR denne støtten har ingen
+    // `drawings` – bygg én tegning per gammel PDF-side (se migrateDrawings). PdfDoc-
+    // objektene selv lastes asynkront rett etter (TilbudEditor → attachPdfDocs); her
+    // settes kun selve tegningslisten + hvilken er aktiv.
+    const drawings = migrateDrawings(snapshot);
+    const activeDrawing = drawings.find((d) => d.id === snapshot.currentPage) ?? drawings[0] ?? null;
     set({
       lines: snapshot.lines.map((l) => ({ ...l, subId: migrateSubId(l.subId) })),
       symbols: snapshot.symbols,
@@ -3071,14 +3217,17 @@ export const useStore = create<AppState>((set, get) => {
       clamps: snapshot.clamps ?? [],
       caps: snapshot.caps ?? [],
       measurements: snapshot.measurements ?? [],
-      scale: snapshot.scale,
+      scale: activeDrawing?.scale ?? snapshot.scale,
       // Globale standarder som bunn, tilbudets egne valg oppå – tegningens
       // egne valg er mer spesifikke enn dine generelle vaner.
       lineConfig: { ...loadSettings().lineConfig, ...migratedLineConfig },
       symbolConfig: snapshot.symbolConfig ?? {},
-      fileName: snapshot.fileName,
-      numPages: snapshot.numPages,
-      currentPage: snapshot.currentPage,
+      drawings,
+      pdfDocs: {},
+      pdfDoc: null,
+      fileName: activeDrawing?.name ?? null,
+      numPages: drawings.length,
+      currentPage: activeDrawing?.id ?? 1,
       multiSelection: new Set<string>(),
       history: { past: [], future: [] },
     });
@@ -3086,6 +3235,8 @@ export const useStore = create<AppState>((set, get) => {
 
   resetWorkspace: () =>
     set({
+      drawings: [],
+      pdfDocs: {},
       pdfDoc: null,
       fileName: null,
       numPages: 0,

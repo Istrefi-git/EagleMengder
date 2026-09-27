@@ -405,6 +405,29 @@ export interface ScaleState {
   source: 'none' | 'manual' | 'calibrated' | 'auto';
 }
 
+/** Én tegning i tilbudet – som regel én side av en opplastet PDF. Et tilbud kan ha
+ * flere tegninger (flere opplastede PDF-er, eller flere sider av samme PDF); hver
+ * har sin egen målestokk, siden to tegninger sjelden er i samme målestokk. `id`
+ * DOBLER som `page`-verdien på alle tegnede entiteter (LineEntity, SymbolEntity osv.)
+ * – de eksisterende `entity.page === currentPage`-filtrene i hele appen virker derfor
+ * uendret når `currentPage` betyr «aktiv tegnings id» i stedet for et rått PDF-
+ * sidetall. Stabil og økende (ikke en array-indeks), så den aldri kolliderer med en
+ * annen tegnings id etter at tegninger er fjernet. */
+export interface DrawingEntity {
+  id: number;
+  /** Vises i tegningsvelgeren – som regel PDF-ens filnavn (+ « – side N» ved en
+   * flersidig PDF), men fritt redigerbart. */
+  name: string;
+  /** Hvilken opplastet PDF denne tegningen er en side av (nøkkel inn i `pdfDocs` og
+   * i IndexedDB-lagringen, se lib/pdfStorage.ts). */
+  pdfId: string;
+  /** Sidetall INNE i den PDF-en (1-basert) – kan avvike fra `id` når det er flere
+   * tegninger/PDF-er i samme tilbud. */
+  pdfPage: number;
+  /** Egen målestokk per tegning – to tegninger er sjelden i samme målestokk. */
+  scale: ScaleState;
+}
+
 // ── Materialsett (gjenbrukes på tvers av underkategorier) ───────────────────
 
 const TAPPEVANN_MAT = ['Kobber', 'Rustfritt stål', 'PEX', 'PEX-AL-PEX (kompositt)', 'PP-R'];

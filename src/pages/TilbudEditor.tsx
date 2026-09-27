@@ -13,8 +13,9 @@ import { PrintableReport } from '../components/PrintableReport';
 import { OffLineConfirmDialog } from '../components/OffLineConfirmDialog';
 import { useStore } from '../store';
 import { useProjectsStore } from '../lib/projectsStore';
-import { loadPdfBytes } from '../lib/pdfStorage';
+import { loadAllPdfBytes } from '../lib/pdfStorage';
 import { loadPdf } from '../lib/pdf';
+import type { PdfDoc } from '../lib/pdf';
 
 function getHint(tool: string): string | null {
   if (tool.startsWith('line:'))
@@ -78,10 +79,18 @@ export default function TilbudEditor() {
   const fileName = useStore((s) => s.fileName);
   const numPages = useStore((s) => s.numPages);
   const currentPage = useStore((s) => s.currentPage);
+  const drawings = useStore((s) => s.drawings);
+  const branches = useStore((s) => s.branches);
+  const bends = useStore((s) => s.bends);
+  const tags = useStore((s) => s.tags);
+  const clamps = useStore((s) => s.clamps);
+  const caps = useStore((s) => s.caps);
+  const measurements = useStore((s) => s.measurements);
+  const symbolConfig = useStore((s) => s.symbolConfig);
   const exportSnapshot = useStore((s) => s.exportSnapshot);
   const importSnapshot = useStore((s) => s.importSnapshot);
   const resetWorkspace = useStore((s) => s.resetWorkspace);
-  const attachPdfDoc = useStore((s) => s.attachPdfDoc);
+  const attachPdfDocs = useStore((s) => s.attachPdfDocs);
   const setError = useStore((s) => s.setError);
 
   const loadedTilbudId = useRef<string | null>(null);
@@ -113,23 +122,53 @@ export default function TilbudEditor() {
     resetWorkspace();
     importSnapshot(tilbud.snapshot);
 
-    loadPdfBytes(tilbudId)
-      .then(async (bytes) => {
-        if (!bytes) return;
-        const doc = await loadPdf(bytes);
-        attachPdfDoc(doc, doc.numPages);
-      })
-      .catch((err) => setError(`Kunne ikke gjenopprette tegning: ${(err as Error).message}`));
+    // importSnapshot er synkron, så drawings er allerede satt (og migrert – se
+    // migrateDrawings i store.ts – hvis dette er et eldre, enkelt-PDF-tilbud) i
+    // det øyeblikket vi leser den ferske tilstanden her.
+    const pdfIds = useStore.getState().drawings.map((d) => d.pdfId);
+    if (pdfIds.length > 0) {
+      loadAllPdfBytes(tilbudId, pdfIds)
+        .then(async (byPdfId) => {
+          const docs: Record<string, PdfDoc> = {};
+          for (const [pdfId, bytes] of Object.entries(byPdfId)) {
+            docs[pdfId] = await loadPdf(bytes);
+          }
+          attachPdfDocs(docs);
+        })
+        .catch((err) => setError(`Kunne ikke gjenopprette tegning: ${(err as Error).message}`));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilbudId, tilbud]);
 
-  // Lagre mengdedata til tilbudet fortløpende
+  // Lagre mengdedata til tilbudet fortløpende. Avhengighetslista dekker nå ALLE
+  // feltene exportSnapshot faktisk tar med (tidligere manglet branches/bends/tags/
+  // clamps/caps/measurements/symbolConfig/drawings – endringer KUN i disse ble aldri
+  // lagret).
   useEffect(() => {
     if (!tilbudId || loadedTilbudId.current !== tilbudId) return;
     saveTilbudSnapshot(tilbudId, exportSnapshot());
     setLastSavedAt(new Date());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tilbudId, lines, symbols, transitions, annotations, scale, lineConfig, fileName, numPages, currentPage]);
+  }, [
+    tilbudId,
+    lines,
+    symbols,
+    transitions,
+    branches,
+    bends,
+    annotations,
+    tags,
+    clamps,
+    caps,
+    measurements,
+    scale,
+    lineConfig,
+    symbolConfig,
+    fileName,
+    numPages,
+    currentPage,
+    drawings,
+  ]);
 
   if (!project || !tilbud) {
     return <Navigate to="/dashboard" replace />;

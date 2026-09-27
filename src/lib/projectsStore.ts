@@ -116,6 +116,10 @@ export const useProjectsStore = create<ProjectsState>()(
                 fileName: src.fileName,
                 numPages: src.numPages,
                 currentPage: src.currentPage,
+                // Samme tegninger (og dermed samme pdfId-er) som kilden – kun
+                // MENGDEDATA er tom i kopien, selve tegningsgrunnlaget/PDF-ene deles.
+                // ProjectDetail.onCopyDrawing kopierer PDF-bytene for hver pdfId.
+                drawings: src.drawings,
               }
             : null,
         };

@@ -19,7 +19,10 @@ export function PdfAnalysisDialog() {
   const open = useStore((s) => s.pdfAnalysisDialogOpen);
   const close = useStore((s) => s.closePdfAnalysisDialog);
   const pdfDoc = useStore((s) => s.pdfDoc);
-  const currentPage = useStore((s) => s.currentPage);
+  // `currentPage` er den aktive TEGNINGENS id, ikke et rått PDF-sidetall (se
+  // DrawingEntity i types.ts) – pdf.js-kallene under trenger tegningens EGEN
+  // `pdfPage` inn i `pdfDoc`, samme mønster som PdfCanvas' render-effekt.
+  const activePdfPage = useStore((s) => s.drawings.find((d) => d.id === s.currentPage)?.pdfPage ?? 1);
   const numPages = useStore((s) => s.numPages);
   const fileName = useStore((s) => s.fileName);
 
@@ -40,7 +43,7 @@ export function PdfAnalysisDialog() {
     setAnalysis(null);
     setGeometry(null);
 
-    analyzePageCached(pdfDoc, currentPage, { shouldCancel: () => cancelledRef.current })
+    analyzePageCached(pdfDoc, activePdfPage, { shouldCancel: () => cancelledRef.current })
       .then((res) => {
         if (!cancelled) setAnalysis(res);
       })
@@ -55,7 +58,7 @@ export function PdfAnalysisDialog() {
       cancelled = true;
       cancelledRef.current = true;
     };
-  }, [open, pdfDoc, currentPage]);
+  }, [open, pdfDoc, activePdfPage]);
 
   useEffect(() => {
     if (!open) return;
@@ -88,7 +91,7 @@ export function PdfAnalysisDialog() {
 
         <div className="modal-body">
           {!pdfDoc && <p className="note">Ingen tegning er lastet inn.</p>}
-          {busy && <p className="note">Analyserer side {currentPage}…</p>}
+          {busy && <p className="note">Analyserer side {activePdfPage}…</p>}
           {error && <p className="pa-error">Analysen feilet: {error}</p>}
 
           {analysis && (
@@ -212,7 +215,7 @@ export function PdfAnalysisDialog() {
                       onClick={() => {
                         if (!pdfDoc) return;
                         setGeoBusy(true);
-                        getGeometryLayer(pdfDoc, currentPage)
+                        getGeometryLayer(pdfDoc, activePdfPage)
                           .then(setGeometry)
                           .catch((err: Error) => setError(err.message))
                           .finally(() => setGeoBusy(false));
