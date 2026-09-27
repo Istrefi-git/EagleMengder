@@ -32,7 +32,9 @@ import {
   DEFAULT_THEME,
   SUBCATEGORIES,
   categoryOf,
+  defaultBranchFittingForPipe,
   defaultSymbolProps,
+  isRectDim,
   migrateSubId,
 } from './types';
 import type { PdfDoc } from './lib/pdf';
@@ -133,51 +135,23 @@ export function openEndsOf(
  * til å gjelde ETTERPÅ-endringer også, ikke bare i det øyeblikket linjen tegnes.
  * Tre eller flere segmenter i samme punkt er en avgreining (har alt sin egen del) og
  * behandles bevisst ikke her. */
+/** Tynn wrapper over C5-motoren (se lenger ned i filen), kalt fra updateLineProps/
+ * updateManyLineProps rett etter en RENE egenskaps-endring (dimensjon/underkategori,
+ * ikke geometri). `kinds: ['transition']` garanterer at motoren aldri kan så en bend
+ * eller avgreining her – kun overgangen i skjøten kan opprettes/oppdateres/fjernes,
+ * akkurat som denne funksjonen alltid har gjort. */
 function syncTransitionsAtJoints(
   lines: LineEntity[],
   transitions: TransitionEntity[],
   currentPage: number,
   changedIds: Set<string>,
 ): TransitionEntity[] {
-  const pageLines = lines.filter((l) => l.page === currentPage);
-  let out = transitions;
-  for (const line of pageLines) {
-    if (!changedIds.has(line.id)) continue;
-    const n = line.points.length;
-    const joints: [number, number][] = [
-      [line.points[0], line.points[1]],
-      [line.points[n - 2], line.points[n - 1]],
-    ];
-    for (const [jx, jy] of joints) {
-      const at = pageLines.filter((l) => endpointsOf(l).some((p) => sharesPoint(p.x, p.y, jx, jy)));
-      if (at.length !== 2) continue; // 1 = fri ende, ≥3 = avgreining – ikke en overgang
-      const other = at.find((l) => l.id !== line.id);
-      if (!other || other.subId !== line.subId || other.material !== line.material) continue;
-
-      const i = out.findIndex(
-        (t) => t.page === line.page && t.subId === line.subId && sharesPoint(t.x, t.y, jx, jy),
-      );
-      if (other.dimension === line.dimension) {
-        // Ikke lenger en dimensjonsendring → fjern en ev. overgang, ellers ville
-        // mengdelisten fått en meningsløs «Ø200 → Ø200»-rad.
-        if (i >= 0) out = out.filter((_, k) => k !== i);
-        continue;
-      }
-      const patch = {
-        subId: line.subId,
-        material: line.material,
-        fromDimension: other.dimension,
-        toDimension: line.dimension,
-        x: jx,
-        y: jy,
-      };
-      out =
-        i >= 0
-          ? out.map((t, k) => (k === i ? { ...t, ...patch } : t))
-          : [...out, { id: nextId('trans'), page: line.page, ...patch }];
-    }
-  }
-  return out;
+  const pts = changedPoints(lines, lines, changedIds);
+  return reconcileInPatch(
+    { lines, bends: [], transitions, branches: [], currentPage, scale: { metersPerPixel: null, label: '', source: 'none' } },
+    pts,
+    { kinds: ['transition'] },
+  ).transitions;
 }
 
 /** Ligger (x,y) INNVENDIG på kroppen til `line` (ikke i et av dens egne endepunkter)?
@@ -242,6 +216,284 @@ function pruneOrphanFittings(
     transitions: transitions.filter(keepJointMarker),
     branches: branches.filter(keepBranch),
   };
+}
+
+// ── C5: Delsammenstillings-motoren ──────────────────────────────────────────
+//
+// Rot-årsaken bak «trim virker dårlig» og «ting henger ikke sammen»: ingenting i
+// appen lager en DEL etter en geometri-ENDRING (kun addLineRun ved selve tegningen,
+// kun insertBranchForTarget/connectLandedEndpoints under tegning/Flytt/Kopier, kun
+// syncTransitionsAtJoints ved egenskaps-endring). Trim, vertex-drag, splitLineAt og
+// Align lager i dag ingenting. Motoren under er den ENE regelmotoren alle disse skal
+// kalle etterpå – ren, idempotent, og typet slik at UI kan følge opp uten at motoren
+// selv blokkerer på en dialog.
+
+export type BranchLikeKind = 'bend' | 'transition' | 'branch';
+const DEFAULT_RECONCILE_KINDS: BranchLikeKind[] = ['bend', 'transition', 'branch'];
+/** Minste turn-vinkel (grader) som regnes som en ekte bend, ikke bare flyttall-støy fra
+ * en kombinert redigering – litt romsligere enn polylineBendAngles' egen 0.5°. */
+const BEND_MIN_DEG = 2;
+
+export interface ReconcileReport {
+  /** Kanal-avgreininger satt til påstikk der T-kanal STRUKTURELT også var gyldig (samme
+   * rund/rektangulær form på hoved og gren) – brukeren kan bekrefte/endre med én gang,
+   * se BranchChoicePopover/editId. Tomt for rør (der er standardvalget alltid entydig). */
+  ambiguous: { id: string; editId: string }[];
+  /** Punkter der to ULIKE underkategorier (eller materialer) møttes og derfor IKKE ble
+   * koblet sammen, med mindre `allowSystemMix` var satt. */
+  systemMix: { x: number; y: number }[];
+}
+
+export interface ReconcileOpts {
+  /** Hvilke deltyper motoren får lov til å opprette/oppdatere/fjerne. Standard: alle
+   * tre. `syncTransitionsAtJoints` kaller med kun `['transition']`, slik at en ren
+   * dimensjons-/kategoriendring aldri kan så en bend eller avgreining den ikke ba om. */
+  kinds?: BranchLikeKind[];
+  /** Kobler sammen to punkter med ULIK subId/materiale i stedet for å la dem stå urørt
+   * (se report.systemMix) – brukes av trim-verktøyet (C6) etter at brukeren har svart
+   * «Ja» på systemblande-varselet. Ubrukt av C5s egne kallsteder (alle lar den stå
+   * default `false`), men motoren støtter den allerede for C6. */
+  allowSystemMix?: boolean;
+}
+
+type ReconcileState = Pick<AppState, 'lines' | 'bends' | 'transitions' | 'branches' | 'currentPage' | 'scale'>;
+
+/** Unionen av GAMLE og NYE endepunkter for de oppgitte linje-id-ene – motoren tar
+ * PUNKTER, ikke linje-id-er, nettopp fordi et punkt en linje FORLOT (f.eks. etter en
+ * trim eller et vertex-drag) ikke lenger har noen linje-id å hentes fra i den nye
+ * tilstanden, men fortsatt kan ha en bend/avgreining som er blitt foreldreløs der.
+ * `before`/`after` kan være samme array (f.eks. når kun subId/dimensjon endret seg,
+ * ikke selve geometrien) – da blir resultatet naturligvis bare de nåværende punktene. */
+export function changedPoints(
+  before: LineEntity[],
+  after: LineEntity[],
+  ids: Set<string>,
+): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  for (const l of before) if (ids.has(l.id)) pts.push(...endpointsOf(l));
+  for (const l of after) if (ids.has(l.id)) pts.push(...endpointsOf(l));
+  return pts;
+}
+
+/** Ren kjerne: for hvert (klyngede) punkt, regn ut hvilken del (om noen) som BURDE sitte
+ * der ut fra gjeldende geometri, og sammenlign mot det som faktisk finnes. Idempotent –
+ * trygt å kjøre om igjen på et allerede riktig punkt. Rører ALDRI en deltype som ikke er
+ * med i `opts.kinds`. Ytelse: naiv O(punkter × linjer) – fullt ut billig nok for de aller
+ * fleste kall (≤ 8 punkter); en strekning med mange punkter (lang Flytt/Kopier) er en
+ * bevisst IKKE-optimalisert vei i denne runden (se PLAN.md C5, «grid-indeks»). */
+export function reconcileInPatch(
+  s: ReconcileState,
+  points: { x: number; y: number }[],
+  opts: ReconcileOpts = {},
+): { bends: BendEntity[]; transitions: TransitionEntity[]; branches: BranchEntity[]; report: ReconcileReport } {
+  const kinds = new Set(opts.kinds ?? DEFAULT_RECONCILE_KINDS);
+  const allowSystemMix = opts.allowSystemMix ?? false;
+  const page = s.currentPage;
+  const mpp = s.scale.metersPerPixel;
+  const pageLines = s.lines.filter((l) => l.page === page);
+
+  // Klynger inn-punktene innenfor JOINT_EPS – flere kallere (changedPoints særlig) kan
+  // gi nesten-duplikater for samme fysiske knute.
+  const clusterKey = (x: number, y: number) => `${Math.round(x / JOINT_EPS)}:${Math.round(y / JOINT_EPS)}`;
+  const seenKeys = new Set<string>();
+  const uniquePoints: { x: number; y: number }[] = [];
+  for (const p of points) {
+    const k = clusterKey(p.x, p.y);
+    if (seenKeys.has(k)) continue;
+    seenKeys.add(k);
+    uniquePoints.push(p);
+  }
+
+  let bends = s.bends;
+  let transitions = s.transitions;
+  let branches = s.branches;
+  const report: ReconcileReport = { ambiguous: [], systemMix: [] };
+
+  type Desired =
+    | { kind: 'none' }
+    | { kind: 'bend'; subId: string; material: string; dimension: string; angleDeg: number }
+    | { kind: 'transition'; subId: string; material: string; fromDimension: string; toDimension: string }
+    | {
+        kind: 'branch';
+        subId: string;
+        material: string;
+        dimension: string;
+        branchDimension: string;
+        angleDeg: number;
+        ambiguous: boolean;
+      };
+
+  for (const P of uniquePoints) {
+    // Alle linje-endepunkter som møtes nøyaktig her, med hver sin FJERNE ende (den andre
+    // enden av samme linje) – graden er ganske enkelt lengden på denne lista.
+    const at: { line: LineEntity; far: { x: number; y: number } }[] = [];
+    for (const l of pageLines) {
+      const eps = endpointsOf(l);
+      eps.forEach((pt, i) => {
+        if (sharesPoint(pt.x, pt.y, P.x, P.y)) at.push({ line: l, far: eps[1 - i] });
+      });
+    }
+    const deg = at.length;
+
+    let desired: Desired = { kind: 'none' };
+
+    if (deg === 2) {
+      const [a, b] = at;
+      const sameSystem = a.line.subId === b.line.subId && a.line.material === b.line.material;
+      if (!sameSystem && !allowSystemMix) {
+        report.systemMix.push(P);
+      } else {
+        const subId = a.line.subId;
+        const material = a.line.material;
+        if (a.line.dimension !== b.line.dimension) {
+          desired = { kind: 'transition', subId, material, fromDimension: b.line.dimension, toDimension: a.line.dimension };
+        } else {
+          const turn = turnAngleDeg(a.far, P, b.far);
+          if (turn > BEND_MIN_DEG) {
+            desired = { kind: 'bend', subId, material, dimension: a.line.dimension, angleDeg: classifyBendAngle(turn) };
+          }
+        }
+      }
+    } else if (deg >= 3) {
+      // Hovedparet = de to armene hvis retninger er nærmest kollineære (en «gjennomgang»
+      // gjennom knuten); resten er avgreining(er). Faller tilbake til de to første hvis
+      // ingen par peker tydelig rett gjennom (en ekte Y-knute har ikke noe «riktig» svar).
+      let bestPair: [number, number] = [0, 1];
+      let bestTurn = Infinity;
+      for (let i = 0; i < at.length; i++) {
+        for (let j = i + 1; j < at.length; j++) {
+          const turn = turnAngleDeg(at[i].far, P, at[j].far);
+          if (turn < bestTurn) {
+            bestTurn = turn;
+            bestPair = [i, j];
+          }
+        }
+      }
+      const [mi, mj] = bestPair;
+      const main = at[mi];
+      const branchArm = at.find((_, i) => i !== mi && i !== mj);
+      if (branchArm) {
+        const sameSystem = main.line.subId === branchArm.line.subId && main.line.material === branchArm.line.material;
+        if (!sameSystem && !allowSystemMix) {
+          report.systemMix.push(P);
+        } else {
+          const kind = categoryOf(main.line.subId)?.kind;
+          const mainDim = main.line.dimension;
+          const branchDim = branchArm.line.dimension;
+          const angleDeg = (Math.atan2(P.y - main.far.y, P.x - main.far.x) * 180) / Math.PI;
+          desired = {
+            kind: 'branch',
+            subId: main.line.subId,
+            material: main.line.material,
+            dimension: mainDim,
+            branchDimension: branchDim,
+            angleDeg,
+            ambiguous: kind === 'duct' && isRectDim(mainDim) === isRectDim(branchDim),
+          };
+        }
+      }
+    } else if (deg === 1) {
+      // Åpen ende – lander den MIDT PÅ kroppen til en annen linje (ikke i et av dens
+      // egne endepunkter, det er en vanlig skjøt/bend), er det et påstikk/avgreining.
+      // Samme regel som connectLandedEndpoints (PdfCanvas) brukte alene for Flytt/Kopier
+      // – generalisert her til å gjelde alle redigeringer.
+      const own = at[0];
+      let best: { line: LineEntity; cp: NonNullable<ReturnType<typeof closestPointOnPolyline>> } | null = null;
+      for (const other of pageLines) {
+        if (other.id === own.line.id) continue;
+        const n = other.points.length;
+        if (sharesPoint(P.x, P.y, other.points[0], other.points[1])) continue;
+        if (sharesPoint(P.x, P.y, other.points[n - 2], other.points[n - 1])) continue;
+        if (!onBodyOf(other, P.x, P.y, other.subId, other.material, mpp)) continue;
+        const cp = closestPointOnPolyline(other.points, P);
+        if (cp && (!best || cp.distance < best.cp.distance)) best = { line: other, cp };
+      }
+      if (best) {
+        const sameSystem = best.line.subId === own.line.subId && best.line.material === own.line.material;
+        if (!sameSystem && !allowSystemMix) {
+          report.systemMix.push(P);
+        } else {
+          const kind = categoryOf(best.line.subId)?.kind;
+          desired = {
+            kind: 'branch',
+            subId: best.line.subId,
+            material: best.line.material,
+            dimension: best.line.dimension,
+            branchDimension: own.line.dimension,
+            angleDeg: best.cp.angleDeg,
+            ambiguous: kind === 'duct' && isRectDim(best.line.dimension) === isRectDim(own.line.dimension),
+          };
+        }
+      }
+    }
+
+    const existingBend = bends.find((b) => b.page === page && sharesPoint(b.x, b.y, P.x, P.y));
+    const existingTransition = transitions.find((t) => t.page === page && sharesPoint(t.x, t.y, P.x, P.y));
+    const existingBranch = branches.find((b) => b.page === page && sharesPoint(b.x, b.y, P.x, P.y));
+
+    if (kinds.has('bend')) {
+      if (desired.kind === 'bend') {
+        const d = desired;
+        bends = existingBend
+          ? bends.map((b) =>
+              b.id === existingBend.id
+                ? { ...b, subId: d.subId, material: d.material, dimension: d.dimension, angleDeg: d.angleDeg, x: P.x, y: P.y }
+                : b,
+            )
+          : [
+              ...bends,
+              { id: nextId('bend'), page, subId: d.subId, material: d.material, dimension: d.dimension, x: P.x, y: P.y, angleDeg: d.angleDeg },
+            ];
+      } else if (existingBend) {
+        bends = bends.filter((b) => b.id !== existingBend.id);
+      }
+    }
+    if (kinds.has('transition')) {
+      if (desired.kind === 'transition') {
+        const d = desired;
+        transitions = existingTransition
+          ? transitions.map((t) =>
+              t.id === existingTransition.id
+                ? { ...t, subId: d.subId, material: d.material, fromDimension: d.fromDimension, toDimension: d.toDimension, x: P.x, y: P.y }
+                : t,
+            )
+          : [
+              ...transitions,
+              { id: nextId('trans'), page, subId: d.subId, material: d.material, fromDimension: d.fromDimension, toDimension: d.toDimension, x: P.x, y: P.y },
+            ];
+      } else if (existingTransition) {
+        transitions = transitions.filter((t) => t.id !== existingTransition.id);
+      }
+    }
+    if (kinds.has('branch')) {
+      if (desired.kind === 'branch') {
+        const d = desired;
+        if (existingBranch) {
+          // Bevisst valg: BEHOLDER eksisterende fittingType (påstikk/T-kanal) – en
+          // brukers manuelle valg skal ikke reverseres av en senere, urelatert
+          // redigering i samme knute (f.eks. et lite vertex-nudge).
+          branches = branches.map((b) =>
+            b.id === existingBranch.id
+              ? { ...b, subId: d.subId, material: d.material, dimension: d.dimension, branchDimension: d.branchDimension, angleDeg: d.angleDeg, x: P.x, y: P.y }
+              : b,
+          );
+        } else {
+          const fittingType: BranchFittingType =
+            categoryOf(d.subId)?.kind === 'duct' ? 'saddle_tap' : defaultBranchFittingForPipe(d.subId);
+          const id = nextId('branch');
+          branches = [
+            ...branches,
+            { id, page, subId: d.subId, material: d.material, dimension: d.dimension, branchDimension: d.branchDimension, fittingType, x: P.x, y: P.y, angleDeg: d.angleDeg },
+          ];
+          if (d.ambiguous) report.ambiguous.push({ id, editId: id });
+        }
+      } else if (existingBranch) {
+        branches = branches.filter((b) => b.id !== existingBranch.id);
+      }
+    }
+  }
+
+  return { bends, transitions, branches, report };
 }
 
 /** Hva et flytte-/kopier-steg (Flytt/Kopier-verktøyet, eller piltastene) skal virke på.
@@ -1263,6 +1515,11 @@ interface AppState {
    * montert utstyr som lå PÅ selve den forkastede stubben slettes (kan ikke reprojiseres
    * – geometrien der er borte), mens de på den bevarte siden er upåvirket. */
   trimLineTo: (lineId: string, keep: 'start' | 'end', x: number, y: number) => void;
+  /** Store-action-varianten av C5-motoren – egen recordHistory()/set(), for kallere som
+   * bruker den ALENE (ikke foldet inn i en annen handlings egen set()). Returnerer
+   * rapporten slik at kalleren (typisk Trim/Forleng eller Align) kan følge opp
+   * `ambiguous`/`systemMix` med sin egen UI. */
+  reconcileFittingsAt: (points: { x: number; y: number }[], opts?: ReconcileOpts) => ReconcileReport;
   updateLineProps: (
     id: string,
     patch: Partial<Pick<LineEntity, 'subId' | 'material' | 'dimension' | 'systemId'>>,
@@ -1817,18 +2074,32 @@ export const useStore = create<AppState>((set, get) => {
         ? a.id
         : b.id;
 
-    set((s) => ({
-      lines: [...s.lines.filter((l) => l.id !== id), a, b],
-      tags: s.tags.map((t) => (t.lineId === id ? { ...t, lineId: halfFor(t.x, t.y) } : t)),
-      clamps: s.clamps.map((c) => (c.lineId === id ? { ...c, lineId: halfFor(c.x, c.y) } : c)),
-      symbols: s.symbols.map((sy) =>
-        sy.mountedLineId === id ? { ...sy, mountedLineId: halfFor(sy.x, sy.y) } : sy,
-      ),
-      selectedId: selectHalf === 'a' ? a.id : selectHalf === 'b' ? b.id : null,
-      selectedKind: selectHalf === 'none' ? null : 'line',
-      // Den gamle id-en kan ligge i flervalget – ville ellers blitt en død id der.
-      multiSelection: new Set<string>(),
-    }));
+    set((s) => {
+      const lines = [...s.lines.filter((l) => l.id !== id), a, b];
+      // C5: stort sett en no-op (a og b er identiske i subId/materiale/dimensjon og
+      // perfekt kollineære ved kuttet, så ingen bend/overgang skal oppstå der) – men gjør
+      // knuten konsistent hvis kuttpunktet tilfeldigvis også er et eksisterende punkt for
+      // en ANNEN linje (sjelden, men da skal den knuten reklassifiseres som alle andre).
+      const reconciled = reconcileInPatch(
+        { lines, bends: s.bends, transitions: s.transitions, branches: s.branches, currentPage: s.currentPage, scale: s.scale },
+        [{ x, y }],
+      );
+      return {
+        lines,
+        bends: reconciled.bends,
+        transitions: reconciled.transitions,
+        branches: reconciled.branches,
+        tags: s.tags.map((t) => (t.lineId === id ? { ...t, lineId: halfFor(t.x, t.y) } : t)),
+        clamps: s.clamps.map((c) => (c.lineId === id ? { ...c, lineId: halfFor(c.x, c.y) } : c)),
+        symbols: s.symbols.map((sy) =>
+          sy.mountedLineId === id ? { ...sy, mountedLineId: halfFor(sy.x, sy.y) } : sy,
+        ),
+        selectedId: selectHalf === 'a' ? a.id : selectHalf === 'b' ? b.id : null,
+        selectedKind: selectHalf === 'none' ? null : 'line',
+        // Den gamle id-en kan ligge i flervalget – ville ellers blitt en død id der.
+        multiSelection: new Set<string>(),
+      };
+    });
   },
 
   updateLinePoints: (id, points) => {
@@ -1863,6 +2134,13 @@ export const useStore = create<AppState>((set, get) => {
       const lines = s.lines.map((l) => (l.id === lineId ? { ...l, points: pts } : l));
 
       const pruned = pruneOrphanFittings(lines, line.page, s.bends, s.transitions, s.branches, s.scale.metersPerPixel);
+      // C5: den bevarte enden lander nå på (x,y) – kan være en helt ny skjøt (mot en
+      // annen linjes endepunkt: bend/overgang) eller et påstikk (mot en annens kropp).
+      // Den forkastede enden trenger IKKE en tilsvarende sjekk – den finnes ikke lenger.
+      const reconciled = reconcileInPatch(
+        { lines, bends: pruned.bends, transitions: pruned.transitions, branches: pruned.branches, currentPage: s.currentPage, scale: s.scale },
+        [{ x, y }],
+      );
 
       const tCut = paramAlongSegment(p0, p1, { x, y });
       const isOnDiscardedStub = (px: number, py: number): boolean => {
@@ -1871,13 +2149,23 @@ export const useStore = create<AppState>((set, get) => {
       };
 
       return {
-        ...pruned,
         lines,
+        bends: reconciled.bends,
+        transitions: reconciled.transitions,
+        branches: reconciled.branches,
         tags: s.tags.filter((t) => !(t.lineId === lineId && isOnDiscardedStub(t.x, t.y))),
         clamps: s.clamps.filter((c) => !(c.lineId === lineId && isOnDiscardedStub(c.x, c.y))),
         symbols: s.symbols.filter((sy) => !(sy.mountedLineId === lineId && isOnDiscardedStub(sy.x, sy.y))),
       };
     });
+  },
+
+  reconcileFittingsAt: (points, opts) => {
+    const s = get();
+    recordHistory();
+    const { bends, transitions, branches, report } = reconcileInPatch(s, points, opts);
+    set({ bends, transitions, branches });
+    return report;
   },
 
   updateLineProps: (id, patch) => {
@@ -2344,10 +2632,17 @@ export const useStore = create<AppState>((set, get) => {
       set((s) => {
         const lines = s.lines.filter((l) => l.id !== selectedId);
         const deletedLine = s.lines.find((l) => l.id === selectedId);
-        const pruned = deletedLine
-          ? pruneOrphanFittings(lines, deletedLine.page, s.bends, s.transitions, s.branches, s.scale.metersPerPixel)
-          : { bends: s.bends, transitions: s.transitions, branches: s.branches };
-        return { lines, ...pruned };
+        if (!deletedLine) return { lines };
+        const pruned = pruneOrphanFittings(lines, deletedLine.page, s.bends, s.transitions, s.branches, s.scale.metersPerPixel);
+        // C5: en 3-arms knute som mister sin ene arm er nå en vanlig 2-arms skjøt (bend/
+        // overgang) i stedet for en foreldreløs T som overlevde fordi pruneOrphanFittings
+        // alene kun fjerner, aldri REKLASSIFISERER. Sjekk begge den slettede linjas
+        // gamle endepunkter.
+        const reconciled = reconcileInPatch(
+          { lines, bends: pruned.bends, transitions: pruned.transitions, branches: pruned.branches, currentPage: deletedLine.page, scale: s.scale },
+          endpointsOf(deletedLine),
+        );
+        return { lines, bends: reconciled.bends, transitions: reconciled.transitions, branches: reconciled.branches };
       });
     } else if (selectedKind === 'symbol') {
       set((s) => ({ symbols: s.symbols.filter((sy) => sy.id !== selectedId) }));
@@ -2472,14 +2767,26 @@ export const useStore = create<AppState>((set, get) => {
       const branches = s.branches.filter((b) => !idSet.has(b.id));
       const transitions = s.transitions.filter((t) => !idSet.has(t.id));
       const bends = s.bends.filter((b) => !idSet.has(b.id));
-      const anyLineDeleted = s.lines.some((l) => idSet.has(l.id));
-      const pruned = anyLineDeleted
-        ? pruneOrphanFittings(lines, s.currentPage, bends, transitions, branches, s.scale.metersPerPixel)
-        : { bends, transitions, branches };
+      const deletedLines = s.lines.filter((l) => idSet.has(l.id));
+      const pruned =
+        deletedLines.length > 0
+          ? pruneOrphanFittings(lines, s.currentPage, bends, transitions, branches, s.scale.metersPerPixel)
+          : { bends, transitions, branches };
+      // C5: samme reklassifisering som deleteSelected, på ALLE de slettede linjenes
+      // gamle endepunkter samlet.
+      const reconciled =
+        deletedLines.length > 0
+          ? reconcileInPatch(
+              { lines, bends: pruned.bends, transitions: pruned.transitions, branches: pruned.branches, currentPage: s.currentPage, scale: s.scale },
+              deletedLines.flatMap((l) => endpointsOf(l)),
+            )
+          : pruned;
       return {
         lines,
         symbols: s.symbols.filter((sy) => !idSet.has(sy.id)),
-        ...pruned,
+        bends: reconciled.bends,
+        transitions: reconciled.transitions,
+        branches: reconciled.branches,
         annotations: s.annotations.filter((a) => !idSet.has(a.id)),
         tags: s.tags.filter((t) => !idSet.has(t.id)),
         clamps: s.clamps.filter((c) => !idSet.has(c.id)),

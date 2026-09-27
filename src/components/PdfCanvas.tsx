@@ -3,7 +3,7 @@ import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, 
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
-import { applyMovePlan, clampScale, findConnectedLineIds, openEndsOf, planMove, sharesPoint } from '../store';
+import { applyMovePlan, changedPoints, clampScale, findConnectedLineIds, openEndsOf, planMove, sharesPoint } from '../store';
 import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
@@ -186,6 +186,7 @@ export function PdfCanvas() {
   const hideShiftTip = useStore((s) => s.hideShiftTip);
   const setHideShiftTip = useStore((s) => s.setHideShiftTip);
   const trimLineTo = useStore((s) => s.trimLineTo);
+  const reconcileFittingsAt = useStore((s) => s.reconcileFittingsAt);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
@@ -288,6 +289,11 @@ export function PdfCanvas() {
   // (planMove kjører en BFS over sammenhengende linjer) og fryses for resten av gesten,
   // slik at spøkelses-forhåndsvisningen ikke må regne den ut på nytt for hver musebevegelse.
   const transformPlanRef = useRef<MovePlan | null>(null);
+  // C5: fanger knekkpunktets koordinat FØR et vertex-drag starter (LineNode kaller inn
+  // via onVertexDragStart), slik at onVertexDragEnd kan gi motoren BEGGE endene av det
+  // som kan ha endret seg – både der punktet landet OG der det eventuelt lå før (en
+  // bend/avgreining kan ha blitt foreldreløs akkurat der).
+  const vertexDragOriginRef = useRef<{ x: number; y: number } | null>(null);
   // Numerisk avstandsinntasting (Revit/AutoCAD-stil): første siffertast under en
   // pågående flytte-/kopier-gest åpner dette feltet; Enter flytter/kopierer nøyaktig
   // den oppgitte avstanden (mm) langs retningen pekeren peker akkurat nå.
@@ -824,15 +830,14 @@ export function PdfCanvas() {
   );
 
   /** Setter inn en avgreiningsdel (eller ber bruker velge type for kanal) for et allerede
-   * funnet treff, og returnerer det snappede punktet. `mode: 'auto'` (brukt av
-   * connectLandedEndpoints etter Flytt/Kopier) hopper over popoveren for kanaler og
-   * setter alltid inn et påstikk direkte – brukeren kan siden dobbeltklikke
-   * påstikket for å bytte til T-kanal (se BranchMarker/updateBranch). */
+   * funnet treff, og returnerer det snappede punktet. Brukt av selve TEGNINGEN (en ny
+   * linje som lander på en annen); Flytt/Kopier/Align/Trim bruker i stedet C5-motoren
+   * (reconcileFittingsAt/reconcileInPatch i store.ts), som velger avgreiningstype
+   * automatisk uten å spørre – se PLAN.md C5. */
   const insertBranchForTarget = useCallback(
     (
       target: { line: LineEntity; x: number; y: number; angleDeg: number },
       branchDimension: string,
-      mode: 'ask' | 'auto' = 'ask',
     ): { x: number; y: number } => {
       const kind = categoryOf(target.line.subId)?.kind;
       if (kind === 'pipe') {
@@ -846,10 +851,9 @@ export function PdfCanvas() {
           target.y,
           target.angleDeg,
         );
-      } else if (mode === 'auto' || isRectDim(target.line.dimension) !== isRectDim(branchDimension)) {
-        // 'auto': ventilasjon skal alltid få påstikk direkte, uten spørsmål (brukeren
-        // kan bytte til T-kanal etterpå ved dobbeltklikk). Rund↔rektangulær mismatch
-        // gir samme resultat uansett modus – «T-kanal» finnes ikke fysisk der.
+      } else if (isRectDim(target.line.dimension) !== isRectDim(branchDimension)) {
+        // Rund↔rektangulær mismatch: «T-kanal» finnes ikke fysisk der, så påstikk er
+        // eneste gyldige type – ingen grunn til å spørre.
         addBranch(
           target.line.subId,
           target.line.material,
@@ -876,68 +880,14 @@ export function PdfCanvas() {
     [addBranch, setPendingBranchChoice],
   );
 
-  /** Etter en fullført Flytt/Kopier: sett inn påstikk der et ENDEPUNKT på en flyttet/
-   * kopiert linje har landet MIDT PÅ kroppen til en annen kanal/rør – akkurat som når
-   * man begynner å tegne en ny linje der (se mousedown-grenen for isLineTool), men nå
-   * utløst av å slippe en flyttet/kopiert linje i stedet for et tegne-klikk.
-   * Ventilasjon får alltid påstikk direkte (kan endres til T-kanal ved dobbeltklikk på
-   * markøren, se BranchMarker/updateBranch); rør får sin normale standardtype.
-   * Endepunkt-mot-endepunkt er en vanlig skjøt/bend og skal IKKE gi en avgreining.
-   *
-   * Leser alt fra FERSK store-tilstand (useStore.getState()), IKKE fra komponentens
-   * egne `lines`/`branches` – rett etter duplicateSelection inneholder closurens
-   * `lines` ikke kopiene ennå, og rett etter moveSelection har den fortsatt de GAMLE
-   * koordinatene (React har ikke rukket å re-rendre komponenten). */
-  const connectLandedEndpoints = useCallback(
-    (movedLineIds: Set<string>) => {
-      if (movedLineIds.size === 0) return;
-      const mpp = scale.metersPerPixel;
-      const st0 = useStore.getState();
-      const page = st0.currentPage;
-      const moved = st0.lines.filter((l) => movedLineIds.has(l.id) && l.page === page);
-      // Ekskluder HELE det flyttede/kopierte settet fra kandidatene – ellers ville en
-      // strekning kunne avgrene på sin egen nabo, eller på et vertex-punkt en annen
-      // flyttet linje nettopp forlot.
-      const candidates = st0.lines.filter((l) => l.page === page && !movedLineIds.has(l.id));
-      if (candidates.length === 0) return;
-
-      for (const line of moved) {
-        const kind = categoryOf(line.subId)?.kind;
-        if (kind !== 'pipe' && kind !== 'duct') continue;
-        const n = line.points.length;
-        const ends = [
-          { x: line.points[0], y: line.points[1] },
-          { x: line.points[n - 2], y: line.points[n - 1] },
-        ];
-        for (const end of ends) {
-          const target = findNearestLine(candidates, end, mpp, invScale, kind);
-          if (!target) continue;
-          const tol = lineHitTolerance(target.line.dimension, mpp, invScale);
-          // Treff nøyaktig på målets endepunkt = en vanlig skjøt/fortsettelse (delte
-          // punkter, samme som når to strekk møtes i et bend) – IKKE en avgreining.
-          if (endpointHitOf(target.line, target.x, target.y, tol)) continue;
-          // Unngå duplikat: finnes det allerede en avgreining tilnærmet i treffpunktet
-          // (typisk fordi et kopiert påstikk fulgte med i selve kopien), ikke lag en til.
-          // Leses på nytt per endepunkt, siden forrige runde i denne løkka kan ha lagt
-          // til nettopp en slik avgreining.
-          const eps = Math.max(6 * invScale, 0.5 * mmToPx(dimensionDiameterMm(line.dimension), mpp));
-          const branchesNow = useStore.getState().branches;
-          if (branchesNow.some((b) => b.page === page && distance(b.x, b.y, target.x, target.y) <= eps)) continue;
-          insertBranchForTarget(target, line.dimension, 'auto');
-        }
-      }
-    },
-    [scale.metersPerPixel, invScale, insertBranchForTarget],
-  );
-
   /** Fullfører en flytte-/kopier-gest med en gitt forskyvning (px, i bildekoordinater).
    * Kalles både fra andre klikk (musepekerens avstand fra basispunktet) og fra
    * mm-feltet (avstand langs gjeldende retning).
    *
-   * Hele committen (selve flyttingen/kopien OG ev. auto-innsatte påstikk via
-   * connectLandedEndpoints) pakkes i ÉTT angre-steg med beginHistoryBatch/
-   * endHistoryBatch – ellers ville hver enkelt addBranch (som kaller recordHistory()
-   * selv) blitt sitt eget Ctrl+Z-steg oppå selve flyttingen. */
+   * Hele committen (selve flyttingen/kopien OG C5-motorens auto-innsatte deler) pakkes
+   * i ÉTT angre-steg med beginHistoryBatch/endHistoryBatch – ellers ville hver enkelt
+   * addBranch (som kaller recordHistory() selv) blitt sitt eget Ctrl+Z-steg oppå selve
+   * flyttingen. */
   const commitTransform = useCallback(
     (dx: number, dy: number) => {
       if (dx === 0 && dy === 0) {
@@ -948,18 +898,24 @@ export function PdfCanvas() {
       }
       // Må leses FØR resetTransform() nuller transformPlanRef.
       const plan = transformPlanRef.current;
-      const beforeLineIds = new Set(useStore.getState().lines.map((l) => l.id));
+      const beforeLines = useStore.getState().lines;
       beginHistoryBatch();
       try {
         if (tool === 'copy') {
           duplicateSelection(dx, dy);
-          const newIds = new Set(
-            useStore.getState().lines.filter((l) => !beforeLineIds.has(l.id)).map((l) => l.id),
-          );
-          connectLandedEndpoints(newIds);
+          const afterLines = useStore.getState().lines;
+          const beforeIds = new Set(beforeLines.map((l) => l.id));
+          const newIds = new Set(afterLines.filter((l) => !beforeIds.has(l.id)).map((l) => l.id));
+          // C5: kopiene er helt nye linjer – kun deres NYE endepunkter er relevante
+          // (changedPoints finner naturlig ingenting i «before» for dem).
+          reconcileFittingsAt(changedPoints(beforeLines, afterLines, newIds));
         } else {
           moveSelection(dx, dy, true);
-          connectLandedEndpoints(plan ? plan.lineIds : new Set<string>());
+          const afterLines = useStore.getState().lines;
+          const movedIds = plan ? plan.lineIds : new Set<string>();
+          // C5: BEGGE endepunkt-settene (før OG etter) – et punkt strekningen nettopp
+          // FORLOT kan ha en bend/avgreining som er blitt foreldreløs der.
+          reconcileFittingsAt(changedPoints(beforeLines, afterLines, movedIds));
         }
       } finally {
         endHistoryBatch();
@@ -971,7 +927,7 @@ export function PdfCanvas() {
       duplicateSelection,
       moveSelection,
       resetTransform,
-      connectLandedEndpoints,
+      reconcileFittingsAt,
       beginHistoryBatch,
       endHistoryBatch,
     ],
@@ -1422,9 +1378,9 @@ export function PdfCanvas() {
           const doConnect = () => {
             if (endpointHit && !capped) {
               // Endepunkt-mot-endepunkt (men ikke en gyldig «fortsett»-match over) er en
-              // vanlig skjøt/bend, IKKE en avgreining – samme regel som
-              // connectLandedEndpoints bruker etter Flytt/Kopier. Snapp til punktet uten
-              // å sette inn noe.
+              // vanlig skjøt/bend, IKKE en avgreining – samme regel C5-motoren bruker for
+              // Flytt/Kopier/Align/Trim. Snapp til punktet uten å sette inn noe (selve
+              // bend-delen kommer fra addLineRun når strekningen fullføres).
               setDraftPoints((prev) => [...prev, target.x, target.y]);
             } else {
               // Midt-på-kroppen-treff (eller en blendet ende, behandlet likt): snapp
@@ -1703,13 +1659,18 @@ export function PdfCanvas() {
         const dy = -s * normal.y;
         if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return; // allerede flukt
 
+        const beforeLines = lines;
         select(target.id, target.kind);
         beginHistoryBatch();
         try {
           moveSelection(dx, dy, true);
-          // Kobler målet til det den nå lander inntil, akkurat som Flytt/Kopier –
-          // begrenset til målets egne linjer siden Align kun flytter én ting av gangen.
-          connectLandedEndpoints(target.kind === 'line' ? new Set([target.id]) : new Set());
+          // C5: kobler målet til det den nå lander inntil, akkurat som Flytt/Kopier –
+          // kun relevant når målet er et rør/kanal (et utstyr har ingen linjepunkter å
+          // reconcile mot).
+          if (target.kind === 'line') {
+            const afterLines = useStore.getState().lines;
+            reconcileFittingsAt(changedPoints(beforeLines, afterLines, new Set([target.id])));
+          }
         } finally {
           endHistoryBatch();
         }
@@ -1826,7 +1787,7 @@ export function PdfCanvas() {
       symbols,
       select,
       moveSelection,
-      connectLandedEndpoints,
+      reconcileFittingsAt,
     ],
   );
 
@@ -2971,8 +2932,17 @@ export function PdfCanvas() {
                 metersPerPixel={scale.metersPerPixel}
                 pipeRenderStyle={pipeRenderStyle}
                 customColors={customColors}
-                onVertexDragStart={beginHistoryBatch}
-                onVertexDragEnd={endHistoryBatch}
+                onVertexDragStart={(x, y) => {
+                  vertexDragOriginRef.current = { x, y };
+                  beginHistoryBatch();
+                }}
+                onVertexDragEnd={(x, y) => {
+                  const origin = vertexDragOriginRef.current;
+                  vertexDragOriginRef.current = null;
+                  const pts = origin ? [origin, { x, y }] : [{ x, y }];
+                  reconcileFittingsAt(pts);
+                  endHistoryBatch();
+                }}
               />
             ))}
           {visibleSymbols
@@ -3706,8 +3676,12 @@ interface LineNodeProps {
   onSelectRun: () => void;
   pipeRenderStyle: PipeRenderStyle;
   customColors: Record<string, string>;
-  onVertexDragStart: () => void;
-  onVertexDragEnd: () => void;
+  /** Kalt med knekkpunktets koordinat FØR draget starter – brukes til å fange «gammelt
+   * punkt» for C5-motoren (se onVertexDragEnd), i tillegg til å armere historikk-batchen. */
+  onVertexDragStart: (x: number, y: number) => void;
+  /** Kalt med knekkpunktets koordinat ETTER draget – sammen med det gamle punktet fra
+   * onVertexDragStart gir dette C5-motoren begge endene av det som kan ha endret seg. */
+  onVertexDragEnd: (x: number, y: number) => void;
 }
 
 function LineNode({
@@ -3876,7 +3850,7 @@ function LineNode({
               onMouseDown={(e) => {
                 e.cancelBubble = true;
               }}
-              onDragStart={onVertexDragStart}
+              onDragStart={() => onVertexDragStart(line.points[idx], line.points[idx + 1])}
               onDragMove={(e) => {
                 // Shift holdt inne: lås retningen mot dette punktet til nærmeste
                 // 45°-multiplum, målt fra linjens ANDRE endepunkt – samme regel og
@@ -3895,7 +3869,7 @@ function LineNode({
                   setVertex(idx, e.target.x(), e.target.y(), detach);
                 }
               }}
-              onDragEnd={onVertexDragEnd}
+              onDragEnd={() => onVertexDragEnd(line.points[idx], line.points[idx + 1])}
               onDblClick={(e) => {
                 e.cancelBubble = true;
                 // Alle punkter er nå endepunkter (linjen er alltid 2-punkts) – dobbeltklikk
