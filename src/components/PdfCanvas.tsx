@@ -8,6 +8,7 @@ import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
   CATEGORIES,
+  DEFAULT_SYMBOL_LENGTH_MM,
   LINE_STYLE_LABEL,
   POINT_ANNOTATION_TYPES,
   SUBCATEGORIES,
@@ -3586,6 +3587,9 @@ function DuctRunSchematic({
   const sw = Math.max(1.5 * invScale, 0.4);
   return (
     <Group listening={false}>
+      {/* 20 % fyll mellom veggene, slik at kanalen leses som et volum man kan se
+          gjennom – rent kosmetisk, tegnes først (nederst) og lytter ikke på klikk. */}
+      <Line points={walls.outline} closed fill={color} opacity={0.2} strokeEnabled={false} />
       <Line points={walls.outer} stroke={color} strokeWidth={sw} lineCap="round" lineJoin="round" />
       <Line points={walls.inner} stroke={color} strokeWidth={sw} lineCap="round" lineJoin="round" />
       {/* Senterlinje som klassisk «dash-dot»-kjedestrek (lang strek – prikk – lang strek),
@@ -4318,13 +4322,61 @@ const SYMBOL_MIN_SCREEN_PX = 12;
 /** Aggregat-glyphens nominelle bredde/høyde i lokale enheter (se AhuGlyph). */
 const AHU_GLYPH_UNITS = SYMBOL_GLYPH_UNITS;
 
+/** Glyfens egen lengde (lokal X – langs kanalen ved montering) og tverrmål (lokal Y)
+ * i lokale enheter (r=11), for de typene som har en genuint avlang boks-form (se
+ * DamperBase/silencer-caset i symbols.tsx) og derfor skal skaleres IKKE-uniformt til
+ * virkelig lengde × tverrmål. Andre spjeld-/ventil-/aggregat-typer utenom denne
+ * tabellen bruker symmetriske ikoner uten noen meningsfull «lengde» å strekke, og
+ * skaleres derfor fortsatt uniformt. */
+const SYMBOL_GLYPH_BOX_UNITS: Partial<Record<SymbolEntity['type'], { lengthUnits: number; crossUnits: number }>> = {
+  silencer: { lengthUnits: 33, crossUnits: 18.7 }, // 3r × 1.7r
+  damper: { lengthUnits: 11, crossUnits: 23.1 }, // r × 2.1r
+  vav_damper: { lengthUnits: 11, crossUnits: 23.1 },
+  cav_damper: { lengthUnits: 11, crossUnits: 23.1 },
+  control_damper: { lengthUnits: 11, crossUnits: 23.1 },
+  fire_damper: { lengthUnits: 11, crossUnits: 23.1 },
+};
+
+/** Symbolets eget tverrmål (mm) – dimensjon/DN oppgitt PÅ SELVE symbolet, uavhengig av
+ * hva slags kanal/rør det måtte være montert på. */
+function ownDimensionMm(sym: SymbolEntity): number | null {
+  const raw = sym.props.dimension ?? sym.props.dn;
+  if (!raw) return null;
+  const mm = dimensionDiameterMm(String(raw));
+  return Number.isFinite(mm) && mm > 0 ? mm : null;
+}
+
+/** Symbolets tverrmål i mm: egen dimensjon har forrang (et spjeld/en ventil kan ha en
+ * annen dimensjon enn kanalen/røret det sitter på); den monterte linjas dimensjon er
+ * kun en reserve når symbolet selv ikke har oppgitt noen. */
+function symbolCrossDimMm(sym: SymbolEntity, lines: LineEntity[]): number | null {
+  const own = ownDimensionMm(sym);
+  if (own != null) return own;
+  if (sym.mountedLineId) {
+    const line = lines.find((l) => l.id === sym.mountedLineId);
+    if (line) return dimensionDiameterMm(line.dimension);
+  }
+  return null;
+}
+
+/** Symbolets fysiske lengde (mm) langs kanalen: et eget lengdefelt (lyddemper,
+ * aggregat) vinner alltid; ellers en fornuftig, ikke-redigerbar standardlengde per
+ * type (DEFAULT_SYMBOL_LENGTH_MM), slik at f.eks. et spjeld tegnes med reell
+ * utstrekning i stedet for en vilkårlig brøkdel av kanaldimensjonen. */
+function symbolLengthMm(sym: SymbolEntity): number | null {
+  const own = Number(sym.props.length);
+  if (Number.isFinite(own) && own > 0) return own;
+  return DEFAULT_SYMBOL_LENGTH_MM[sym.type as keyof typeof DEFAULT_SYMBOL_LENGTH_MM] ?? null;
+}
+
 /** Beregner den endelige skaleringen for et utstyrssymbol som `{ scaleX, scaleY }`.
- * De fleste symboler skaleres uniformt (scaleX===scaleY) etter kanaldimensjonen de
- * er montert på, eller eget dimensjonsfelt. Ventilasjonsaggregat skaleres derimot
- * ikke-uniformt etter oppgitt bredde × lengde. Symboler tegnes i verdenskoordinater
- * slik at de holder seg proporsjonale med tegningen ved zoom. En nedre grense hindrer
- * at symbolet blir uleselig lite; faller tilbake til en fast skjermstørrelse når verken
- * dimensjon eller målestokk er tilgjengelig. */
+ * De fleste symboler skaleres uniformt (scaleX===scaleY) etter symbolets egen
+ * dimensjon (kanalen/røret det er montert på som reserve). Ventilasjonsaggregat og de
+ * avlange boks-formede typene i SYMBOL_GLYPH_BOX_UNITS (spjeld, lyddemper) skaleres i
+ * stedet ikke-uniformt etter virkelig lengde × tverrmål. Symboler tegnes i
+ * verdenskoordinater slik at de holder seg proporsjonale med tegningen ved zoom. En
+ * nedre grense hindrer at symbolet blir uleselig lite; faller tilbake til en fast
+ * skjermstørrelse når verken dimensjon eller målestokk er tilgjengelig. */
 function symbolRenderScale(
   sym: SymbolEntity,
   lines: LineEntity[],
@@ -4332,42 +4384,44 @@ function symbolRenderScale(
   invScale: number,
 ): { scaleX: number; scaleY: number } {
   const uniform = (s: number) => ({ scaleX: s, scaleY: s });
+  const floorPx = SYMBOL_MIN_SCREEN_PX * invScale;
   // Ventilasjonsaggregat: ikke-uniform, skalert til oppgitt bredde × lengde (mm).
   if (sym.type === 'air_handling_unit') {
     if (metersPerPixel) {
       const widthMm = Number(sym.props.width) || 1200;
       const lengthMm = Number(sym.props.length) || 2000;
-      const wPx = Math.max(mmToPx(widthMm, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
-      const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
+      const wPx = Math.max(mmToPx(widthMm, metersPerPixel), floorPx);
+      const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), floorPx);
       return { scaleX: wPx / AHU_GLYPH_UNITS, scaleY: lPx / AHU_GLYPH_UNITS };
     }
     return uniform(invScale);
   }
-  // Tilluft-/avtrekksventiler har fast fysisk størrelse (600×600 mm), uavhengig
-  // av kanaldimensjonen de er montert på. Diffusor-glyph-ens ytre kvadrat
-  // (DIFFUSER_GLYPH_UNITS lokale enheter) skaleres til 600 mm i verdenspiksler.
+  // Tilluft-/avtrekksventiler: uniform kvadratisk glyph, skalert etter ventilens EGEN
+  // dimensjon (f.eks. «600x600») i stedet for en fast 600 mm – største av bredde/høyde
+  // avgjør, samme konvensjon som dimensionDiameterMm bruker for rektangulære mål.
   if (sym.type === 'supply_diffuser' || sym.type === 'extract_diffuser') {
+    const dimMm = ownDimensionMm(sym) ?? DIFFUSER_SIZE_MM;
     if (metersPerPixel) {
-      const sidePx = Math.max(mmToPx(DIFFUSER_SIZE_MM, metersPerPixel), SYMBOL_MIN_SCREEN_PX * invScale);
+      const sidePx = Math.max(mmToPx(dimMm, metersPerPixel), floorPx);
       return uniform(sidePx / DIFFUSER_GLYPH_UNITS);
     }
     return uniform(invScale);
   }
-  let dimMm: number | null = null;
-  if (sym.mountedLineId) {
-    const line = lines.find((l) => l.id === sym.mountedLineId);
-    if (line) dimMm = dimensionDiameterMm(line.dimension);
+  const box = SYMBOL_GLYPH_BOX_UNITS[sym.type];
+  const crossMm = symbolCrossDimMm(sym, lines);
+  if (box && metersPerPixel && crossMm != null) {
+    // Avlang boks-glyph (spjeld/lyddemper): lengden går langs kanalens retning (lokal
+    // X, se sym.rotation i SymbolNode), tverrmålet på tvers (lokal Y).
+    const lengthMm = symbolLengthMm(sym) ?? crossMm * 1.5;
+    const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), floorPx);
+    const cPx = Math.max(mmToPx(crossMm, metersPerPixel), floorPx);
+    return { scaleX: lPx / box.lengthUnits, scaleY: cPx / box.crossUnits };
   }
-  if (dimMm == null) {
-    const raw = sym.props.dimension ?? sym.props.dn;
-    if (raw) dimMm = dimensionDiameterMm(String(raw));
-  }
-  if (dimMm != null && Number.isFinite(dimMm) && dimMm > 0 && metersPerPixel) {
-    const diameterPx = mmToPx(dimMm, metersPerPixel); // verdenspiksler
+  if (crossMm != null && metersPerPixel) {
     // Symbolkroppen (SYMBOL_GLYPH_UNITS lokale enheter) skaleres til denne
     // mål-bredden i verdenspiksler; nedre grense = min. lesbar skjermstørrelse
     // (SYMBOL_MIN_SCREEN_PX px ⇒ SYMBOL_MIN_SCREEN_PX·invScale verdenspiksler).
-    const targetPx = Math.max(diameterPx, SYMBOL_MIN_SCREEN_PX * invScale);
+    const targetPx = Math.max(mmToPx(crossMm, metersPerPixel), floorPx);
     return uniform(targetPx / SYMBOL_GLYPH_UNITS);
   }
   // Ingen målestokk/dimensjon: fast lesbar skjermstørrelse.

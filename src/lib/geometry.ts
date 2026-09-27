@@ -313,6 +313,10 @@ export interface DuctRunWalls {
   outer: number[];
   inner: number[];
   centerline: number[];
+  /** Lukket omriss for fyll: `outer` etterfulgt av `inner` i omvendt rekkefølge – begge
+   * kommer fra samme buildOffsetPath-traversering (samme retning, samme avrunding), så
+   * de to kantene møtes uten hull eller overlapp. */
+  outline: number[];
 }
 
 /** Rå (IKKE klippet til [0,1]) parameter for hvor `p` projiserer på segmentet p0→p1 –
@@ -427,9 +431,14 @@ function buildOffsetPath(vertices: { x: number; y: number }[], halfWidths: numbe
  * kanal-strekning, gitt verteksene og pikselbredden (halv diameter) for hvert
  * segment mellom dem. */
 export function buildDuctRunWalls(vertices: { x: number; y: number }[], halfWidths: number[]): DuctRunWalls {
+  const outer = buildOffsetPath(vertices, halfWidths, 1);
+  const inner = buildOffsetPath(vertices, halfWidths, -1);
+  const outline: number[] = [...outer];
+  for (let i = inner.length - 2; i >= 0; i -= 2) outline.push(inner[i], inner[i + 1]);
   return {
-    outer: buildOffsetPath(vertices, halfWidths, 1),
-    inner: buildOffsetPath(vertices, halfWidths, -1),
+    outer,
+    inner,
     centerline: buildOffsetPath(vertices, halfWidths, 0),
+    outline,
   };
 }

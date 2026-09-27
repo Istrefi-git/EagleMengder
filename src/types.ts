@@ -985,6 +985,20 @@ export function defaultSymbolProps(type: string, customComponents: CustomCompone
   return props;
 }
 
+/** Fysisk lengde (mm) langs kanalen for komponenter som ikke har noe eget lengdefelt
+ * (i motsetning til lyddemperen, som velger lengde selv – se `silencer.length`
+ * over). Brukt av `symbolRenderScale` (PdfCanvas.tsx) til å tegne spjeld i reell
+ * lengde i stedet for en vilkårlig brøkdel av kanaldimensjonen. Ingen brukerflate
+ * for disse – de er bevisst interne fornuftige standardverdier, ikke redigerbare
+ * felt i egenskapspanelet. */
+export const DEFAULT_SYMBOL_LENGTH_MM: Partial<Record<BuiltInSymbolType, number>> = {
+  damper: 300,
+  vav_damper: 300,
+  cav_damper: 300,
+  control_damper: 300,
+  fire_damper: 300,
+};
+
 const BRANCH_FITTING_LABELS: Record<BranchFittingType, string> = {
   tee: 'T-rør',
   wye45: '45° grenrør',
