@@ -1239,6 +1239,35 @@ export function PdfCanvas() {
     updateLineConfigDimension(activeSubId, newDimension);
   }
 
+  /** Bytter materiale/kanaltype (f.eks. spiro → rektangulær kanal) fra tegne-HUD-en.
+   * Er en strekning allerede påbegynt, avsluttes den med det gamle materialet og
+   * tegningen fortsetter fra samme punkt med det nye. Dimensjonen beholdes hvis den
+   * finnes for det nye materialet, ellers velges første gyldige (rund ↔ rektangulær
+   * har helt ulike mål). */
+  function changeDraftMaterial(newMaterial: string) {
+    if (!activeSubId || !activeSub || newMaterial === activeMaterial) return;
+    const dims = dimensionsForMaterial(activeSub, newMaterial, customDimensions);
+    const newDimension = draftDimension && dims.includes(draftDimension) ? draftDimension : (dims[0] ?? '');
+    if (draftPoints.length >= 4 && activeMaterial) {
+      const lastX = draftPoints[draftPoints.length - 2];
+      const lastY = draftPoints[draftPoints.length - 1];
+      addLineRun(
+        activeSubId,
+        draftPoints,
+        activeMaterial,
+        draftDimension ?? undefined,
+        draftSystemId || undefined,
+        continuationAnchor ?? undefined,
+        pendingAnchorRef.current ?? undefined,
+      );
+      pendingAnchorRef.current = null;
+      setContinuationAnchor(null);
+      setDraftPoints([lastX, lastY]);
+    }
+    setLineSelection(activeSubId, newMaterial, newDimension);
+    setDraftDimension(newDimension);
+  }
+
   /** Fortsetter tegningen fra endepunktet til et allerede tegnet rett rør-/kanalsegment
    * (klikk-start på et endepunkt, eller dobbeltklikk på et endepunkt-håndtak). Dette
    * legger IKKE til punkter på det gamle segmentet – det starter bare en ny, tilstøtende
@@ -2611,7 +2640,18 @@ export function PdfCanvas() {
         <div className="draw-hud">
           <span className="draw-hud-label">{activeSub.label}</span>
           <span className="draw-hud-sep">·</span>
-          <span className="draw-hud-material">{activeMaterial}</span>
+          <select
+            className="draw-hud-select"
+            value={activeMaterial ?? ''}
+            onChange={(e) => changeDraftMaterial(e.target.value)}
+            title="Bytt materiale/kanaltype (f.eks. rektangulær kanal)"
+          >
+            {activeSub.materials.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
           <select
             className="draw-hud-select"
             value={draftDimension ?? ''}
