@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { TopBar } from '../components/TopBar';
 import { Toolbar } from '../components/Toolbar';
 import { PdfCanvas } from '../components/PdfCanvas';
@@ -95,6 +95,8 @@ export default function TilbudEditor() {
 
   const loadedTilbudId = useRef<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  // Høyre kolonne (mengdeliste + egenskaper) kan skjules for å gi tegningen mer plass.
+  const [railCollapsed, setRailCollapsed] = useState(false);
 
   // Setter fargetema (lys/mørk) på dokumentet – påvirker kun :root-variablene i
   // styles.css (tegneverktøyet), ikke .site-scopet som dashboard/landing bruker.
@@ -196,9 +198,23 @@ export default function TilbudEditor() {
           {hint && <div className="hint-bar">{hint}</div>}
           {error && <div className="error-toast">{error}</div>}
         </main>
-        <div className="right-rail">
-          <QuantityPanel />
-          <PropertiesPanel />
+        <div className={`right-rail-wrap ${railCollapsed && !focusMode ? 'collapsed' : ''}`}>
+          {!focusMode && (
+            <button
+              className="rail-toggle"
+              onClick={() => setRailCollapsed((c) => !c)}
+              title={railCollapsed ? 'Vis mengdelista' : 'Skjul mengdelista'}
+              aria-label={railCollapsed ? 'Vis mengdelista' : 'Skjul mengdelista'}
+            >
+              {railCollapsed ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}
+            </button>
+          )}
+          <div className="right-rail-clip">
+            <div className="right-rail">
+              <QuantityPanel />
+              <PropertiesPanel />
+            </div>
+          </div>
         </div>
       </div>
       <ScaleDialog />

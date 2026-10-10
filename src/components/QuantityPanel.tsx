@@ -1,6 +1,7 @@
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Maximize2, Minimize2 } from 'lucide-react';
+import { useState } from 'react';
 import { useStore } from '../store';
-import { buildQuantityReport } from '../lib/quantityReport';
+import { buildQuantityReportsByDrawing } from '../lib/quantityReport';
 import { groupQuantity } from '../lib/quantityGroups';
 import type { GroupBy, SortBy } from '../lib/quantityGroups';
 import { formatMm } from '../lib/scale';
@@ -13,18 +14,17 @@ const IMPLICIT_TYPES = new Set(['Kanallengde', 'Rørlengde', 'Komponent']);
 
 export function QuantityPanel() {
   const currentPage = useStore((s) => s.currentPage);
-  const fileName = useStore((s) => s.fileName);
-  const drawingCount = useStore((s) => s.drawings.length);
-  // Mengdelisten viser KUN den aktive tegningens egne mengder (med dens egen
-  // målestokk, allerede holdt i synk i `s.scale` – se setPage i store.ts). Uten dette
-  // filteret ville f.eks. to tegninger i ulik målestokk blitt lagt sammen med kun ÉN
-  // av dem sin målestokk, med feil lengder som resultat – se PLAN.md «Flere tegninger».
-  const lines = useStore((s) => s.lines.filter((l) => l.page === currentPage));
-  const symbols = useStore((s) => s.symbols.filter((sy) => sy.page === currentPage));
-  const transitions = useStore((s) => s.transitions.filter((t) => t.page === currentPage));
-  const branches = useStore((s) => s.branches.filter((b) => b.page === currentPage));
-  const bends = useStore((s) => s.bends.filter((b) => b.page === currentPage));
-  const clamps = useStore((s) => s.clamps.filter((c) => c.page === currentPage));
+  const drawings = useStore((s) => s.drawings);
+  const lines = useStore((s) => s.lines);
+  const symbols = useStore((s) => s.symbols);
+  const transitions = useStore((s) => s.transitions);
+  const branches = useStore((s) => s.branches);
+  const bends = useStore((s) => s.bends);
+  const clamps = useStore((s) => s.clamps);
+  // Hvilke tegninger mengdelista viser. `null` = følg den aktive tegningen (standard).
+  // Klikk på et tegningsnavn slår den av/på; flere kan være valgt samtidig, og «Alle»
+  // gir totalen for hele tilbudet.
+  const [picked, setPicked] = useState<number[] | null>(null);
   const customComponents = useStore((s) => s.customComponents);
   const scale = useStore((s) => s.scale);
   const standardLengths = useStore((s) => s.standardLengths);
@@ -40,19 +40,45 @@ export function QuantityPanel() {
   const setSortDir = useStore((s) => s.setQuantitySortDir);
   const mpp = scale.metersPerPixel;
 
-  const report = buildQuantityReport(
+  const validPicked = picked?.filter((id) => drawings.some((d) => d.id === id)) ?? null;
+  const shownIds = validPicked && validPicked.length > 0 ? validPicked : [currentPage];
+  const allShown = drawings.length > 0 && drawings.every((d) => shownIds.includes(d.id));
+  const toggleDrawing = (id: number) => {
+    const next = shownIds.includes(id) ? shownIds.filter((x) => x !== id) : [...shownIds, id];
+    setPicked(next.length > 0 ? next : null);
+  };
+
+  // Én rapport per tegning (med tegningens EGEN målestokk), og radene – allerede i mm –
+  // slås sammen for de valgte tegningene. Riktig også når tegningene har ulik målestokk.
+  const byDrawing = buildQuantityReportsByDrawing(
+    drawings.filter((d) => shownIds.includes(d.id)),
     lines,
     symbols,
     transitions,
     branches,
-    scale,
     standardLengths,
     bends,
     clamps,
     customComponents,
   );
-  const groups = groupQuantity(report, { groupBy, sortBy, sortDir });
-  const hasAnyData = report.rows.length > 0;
+  // Uten noen tegning (ingen PDF lastet) finnes det ingen DrawingEntity – vis da alt
+  // på gjeldende side med gjeldende målestokk, som før.
+  const rows =
+    drawings.length > 0
+      ? byDrawing.flatMap((d) => d.report.rows)
+      : buildQuantityReportsByDrawing(
+          [{ id: currentPage, name: '', scale }],
+          lines,
+          symbols,
+          transitions,
+          branches,
+          standardLengths,
+          bends,
+          clamps,
+          customComponents,
+        )[0].report.rows;
+  const groups = groupQuantity({ rows }, { groupBy, sortBy, sortDir });
+  const hasAnyData = rows.length > 0;
 
   /** Uthever alt tegnet av samme type på lerretet (gjenbruker multiSelection, som
    * PdfCanvas allerede tegner en oransje glød for), når man klikker en mengdelinje. */
@@ -65,11 +91,7 @@ export function QuantityPanel() {
   return (
     <section className="quantity-panel">
       <div className="panel-header">
-        <h3>
-          Mengdeliste
-          {/* Kun ved flere tegninger – ellers er navnet støy alle allerede vet. */}
-          {drawingCount > 1 && fileName && <span className="panel-subheading"> · {fileName}</span>}
-        </h3>
+        <h3>Mengdeliste</h3>
         <div className="panel-header-actions">
           {mpp == null && <span className="badge warn">Sett målestokk</span>}
           <button
@@ -81,6 +103,28 @@ export function QuantityPanel() {
           </button>
         </div>
       </div>
+
+      {drawings.length > 1 && (
+        <div className="qty-drawings">
+          <button
+            className={`qty-drawing-chip ${allShown ? 'active' : ''}`}
+            onClick={() => setPicked(allShown ? null : drawings.map((d) => d.id))}
+            title="Vis totalen for alle tegningene"
+          >
+            Alle
+          </button>
+          {drawings.map((d) => (
+            <button
+              key={d.id}
+              className={`qty-drawing-chip ${shownIds.includes(d.id) ? 'active' : ''}`}
+              onClick={() => toggleDrawing(d.id)}
+              title={d.name}
+            >
+              {d.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {hasAnyData && (
         <div className="qty-controls">

@@ -508,10 +508,101 @@ body {
 .workspace.focus-mode .stage-area {
   display: none;
 }
-.workspace.focus-mode .right-rail {
+.workspace.focus-mode .right-rail-wrap,
+.workspace.focus-mode .right-rail-clip {
   flex: 1;
   width: auto;
+}
+.workspace.focus-mode .right-rail {
+  flex: 1;
+  width: 100%;
   max-width: none;
+}
+/* Høyre kolonne kan skyves ut til høyre: bredden animeres på omslaget, mens selve
+   panelet beholder sin faste bredde inni en klippende boks (innholdet bryter ikke om
+   underveis). Pil-knappen henger på venstrekanten og er alltid synlig. */
+.right-rail-wrap {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+  width: 304px;
+  display: flex;
+  transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.right-rail-wrap.collapsed {
+  width: 0;
+}
+.right-rail-clip {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+.right-rail-wrap .right-rail {
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease;
+}
+.right-rail-wrap.collapsed .right-rail {
+  transform: translateX(24px);
+  opacity: 0;
+}
+.rail-toggle {
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  translate: 0 -50%;
+  z-index: 5;
+  width: 14px;
+  height: 56px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, width 0.15s, left 0.15s;
+}
+.rail-toggle:hover {
+  width: 20px;
+  left: -20px;
+  color: var(--text);
+  background: var(--bg-3);
+}
+.rail-toggle svg {
+  flex-shrink: 0;
+}
+.qty-drawings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 10px;
+}
+.qty-drawing-chip {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.qty-drawing-chip:hover {
+  color: var(--text);
+  background: var(--bg-3);
+}
+.qty-drawing-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent);
 }
 .save-indicator {
   display: inline-flex;
@@ -1504,6 +1595,7 @@ body {
 /* ── Høyre kolonne ───────────────────────────────────────────────────── */
 .right-rail {
   width: 304px;
+  height: 100%;
   flex-shrink: 0;
   background: var(--panel);
   border-left: 1px solid var(--border);
