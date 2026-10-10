@@ -76,35 +76,45 @@ export default function Dashboard() {
               </button>
             </div>
           ) : (
-            <div className="project-grid">
+            <div className="project-register">
+              <div className="project-register-head">
+                <div>Prosj.nr</div>
+                <div>Navn / Kunde</div>
+                <div>Beskrivelse</div>
+                <div>Tilbud</div>
+                <div></div>
+              </div>
               {myProjects.map((p) => {
                 const count = tilbudList.filter((t) => t.projectId === p.id).length;
                 return (
-                  <div className="project-card" key={p.id} onClick={() => navigate(`/projects/${p.id}`)}>
-                    <div className="project-card-head">
-                      <span className="project-card-name">{p.name}</span>
-                      {p.projectNumber && <span className="project-card-number">{p.projectNumber}</span>}
+                  <div
+                    className="project-register-row"
+                    key={p.id}
+                    onClick={() => navigate(`/projects/${p.id}`)}
+                  >
+                    <span className="project-register-number">{p.projectNumber || '—'}</span>
+                    <div>
+                      <div className="project-register-name">{p.name}</div>
+                      {p.customer && <div className="project-register-customer">{p.customer}</div>}
                     </div>
-                    {p.customer && <span className="project-card-customer">{p.customer}</span>}
-                    {p.description && <p className="project-card-desc">{p.description}</p>}
-                    <div className="project-card-footer">
-                      <span>
-                        {count} {count === 1 ? 'tilbud' : 'tilbud'} · {formatDate(p.createdAt)}
-                      </span>
-                      <div className="project-card-actions">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEdit(p);
-                          }}
-                          title="Rediger"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button onClick={(e) => onDelete(p, e)} title="Slett">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
+                    <span className="project-register-customer">{p.description || '—'}</span>
+                    <span className="project-register-count">
+                      {count} {count === 1 ? 'tilbud' : 'tilbud'}
+                      <span className="project-register-date"> · {formatDate(p.createdAt)}</span>
+                    </span>
+                    <div className="project-register-actions">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEdit(p);
+                        }}
+                        title="Rediger"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button onClick={(e) => onDelete(p, e)} title="Slett">
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
                 );
