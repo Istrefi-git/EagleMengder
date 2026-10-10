@@ -1,10 +1,11 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
   Cylinder,
   Download,
   Eye,
+  CircleHelp,
   FileSpreadsheet,
   Maximize2,
   Minus,
@@ -28,6 +29,7 @@ import { groupQuantity } from '../lib/quantityGroups';
 import { downloadQuantityExcel } from '../lib/exportExcel';
 import { captureDrawingDataUrl } from '../lib/stageCapture';
 import { IconMenu } from './IconMenu';
+import { HelpDialog } from './HelpDialog';
 
 interface Props {
   tilbudId: string;
@@ -36,6 +38,7 @@ interface Props {
 
 export function TopBar({ tilbudId, tilbudName }: Props) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const fileName = useStore((s) => s.fileName);
   const numPages = useStore((s) => s.numPages);
@@ -321,6 +324,10 @@ export function TopBar({ tilbudId, tilbudName }: Props) {
         <span className="scale-dot" />
         Målestokk: {scale.label}
       </button>
+      <button className="btn icon help-btn" onClick={() => setHelpOpen(true)} title="Hjelp – slik bruker du programmet">
+        <CircleHelp size={16} />
+      </button>
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
 
       <div className="topbar-group zoomer">
         <button className="btn icon" onClick={() => zoomBy(1 / 1.2)} title="Zoom ut">−</button>

@@ -63,6 +63,7 @@ export function ToolStrip() {
               onClick={() => setTool(tool === mode ? 'select' : mode)}
               disabled={disabled}
               title={title ?? label}
+              data-help={mode}
             >
               <Icon size={15} />
               <span>{label}</span>

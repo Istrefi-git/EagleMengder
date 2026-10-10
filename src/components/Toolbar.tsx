@@ -174,6 +174,7 @@ export function Toolbar() {
       onClick={() => setTool(mode)}
       disabled={disabled}
       title={title ?? label}
+      data-help={mode}
     >
       <span className="tool-icon">
         <Icon size={16} />
@@ -225,7 +226,7 @@ export function Toolbar() {
       </div>
 
       {recentLineTypes.length > 0 && (
-        <div className="tool-section recent-types">
+        <div className="tool-section recent-types" data-help="recent">
           <span className="tool-heading">Sist brukt</span>
           <div className="recent-chips">
             {recentLineTypes.map((r) => {
@@ -356,6 +357,7 @@ export function Toolbar() {
           onClick={() => setLibraryOpen(true)}
           disabled={disabled}
           title="Åpne symbolbiblioteket – ventiler, spjeld, diffusorer og dine egne komponenter"
+          data-help="library"
         >
           <span className="tool-icon">
             <LibraryBig size={16} />
@@ -371,13 +373,14 @@ export function Toolbar() {
           onClick={() => setTool('calibrate')}
           disabled={disabled}
           title="Kalibrer ved å klikke to punkter"
+          data-help="calibrate"
         >
           <span className="tool-icon">
             <Ruler size={16} />
           </span>
           <span className="tool-label">Kalibrer</span>
         </button>
-        <button className="tool" onClick={() => openScaleDialog('manual')} disabled={disabled}>
+        <button className="tool" onClick={() => openScaleDialog('manual')} disabled={disabled} data-help="setscale">
           <span className="tool-icon">
             <Settings2 size={16} />
           </span>
@@ -438,7 +441,7 @@ function SubPicker({
   }
 
   return (
-    <div className="sub-picker">
+    <div className="sub-picker" data-help="line">
       <div className={`sub-trigger-row ${isActiveTool ? 'active' : ''}`}>
         <button
           className={`tool sub-trigger ${isActiveTool ? 'active' : ''}`}

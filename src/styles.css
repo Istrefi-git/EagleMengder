@@ -2508,3 +2508,216 @@ input[type='range'] {
     page-break-before: auto;
   }
 }
+
+
+/* ── Hjelp: brukerveiledning (HelpDialog) og hover-forklaring (HelpHover) ───── */
+.help-dialog {
+  width: 920px;
+  max-width: 94vw;
+  height: min(680px, 88vh);
+  display: flex;
+  flex-direction: column;
+}
+.help-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.help-nav {
+  width: 264px;
+  flex-shrink: 0;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.help-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  color: var(--text-dim);
+}
+.help-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.help-cat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.help-cat strong {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.help-cat span {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+.help-cat:hover {
+  background: var(--bg-3);
+}
+.help-cat.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+}
+.help-cat.active strong {
+  color: var(--accent);
+}
+.help-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 26px 28px;
+}
+.help-cat-title {
+  margin: 0;
+  font-size: 20px;
+}
+.help-cat-blurb {
+  margin: 4px 0 14px;
+  color: var(--text-dim);
+  font-size: 13.5px;
+}
+.help-content section + section {
+  margin-top: 26px;
+}
+.help-topic {
+  padding: 14px 16px;
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+}
+.help-topic h4 {
+  margin: 0 0 6px;
+  font-size: 14.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.help-topic p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.help-topic ol,
+.help-topic ul,
+.help-hover ol {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.help-topic li + li {
+  margin-top: 3px;
+}
+.help-dialog kbd,
+.help-hover kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+.help-keys {
+  margin: 4px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.help-keys > div {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+.help-keys dt,
+.help-keys dd {
+  margin: 0;
+}
+.help-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 10px 0 0 !important;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text) !important;
+  font-size: 12.5px !important;
+}
+.help-tip svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.help-btn {
+  margin-left: 6px;
+}
+.help-hover {
+  position: fixed;
+  z-index: 90;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  pointer-events: none;
+  animation: fade-in 0.2s ease;
+}
+.help-hover-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+}
+.help-hover p {
+  margin: 4px 0 2px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.help-hover ol {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+@media (max-width: 760px) {
+  .help-body {
+    flex-direction: column;
+  }
+  .help-nav {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 38%;
+  }
+}
