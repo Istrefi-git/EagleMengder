@@ -99,6 +99,19 @@ function isTypingContext(e: KeyboardEvent): boolean {
  * (en markup-strek har ikke noe materiale å slå opp standardvinkler for). */
 const DETAIL_LINE_ANGLES = [45, 90, 135, 180];
 
+/** Mørkere variant av en #rrggbb-farge (ganger hver kanal med `factor`). Brukes for
+ * utstyr montert på et rør/en kanal: samme fargetone som systemet, men tydeligere. */
+function darkenColor(hex: string, factor = 0.62): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const ch = (shift: number) =>
+    Math.round(((n >> shift) & 0xff) * factor)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
+}
+
 export function PdfCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -3091,13 +3104,16 @@ export function PdfCanvas() {
                 invScale={invScale}
                 hideLabel={hideComponentLabels}
                 customComponents={customComponents}
-                color={
-                  sym.type === 'supply_diffuser'
-                    ? colorFor(SUBCATEGORIES['36.tilluft'], customColors)
-                    : sym.type === 'extract_diffuser'
-                      ? colorFor(SUBCATEGORIES['36.avtrekk'], customColors)
-                      : undefined
-                }
+                color={(() => {
+                  // Utstyr montert på et rør/en kanal får systemets farge, litt mørkere
+                  // («bold»), så det leses som en del av strekningen men skiller seg ut.
+                  const host = sym.mountedLineId ? lines.find((l) => l.id === sym.mountedLineId) : undefined;
+                  const hostSub = host ? SUBCATEGORIES[host.subId] : undefined;
+                  if (hostSub) return darkenColor(colorFor(hostSub, customColors));
+                  if (sym.type === 'supply_diffuser') return colorFor(SUBCATEGORIES['36.tilluft'], customColors);
+                  if (sym.type === 'extract_diffuser') return colorFor(SUBCATEGORIES['36.avtrekk'], customColors);
+                  return undefined;
+                })()}
                 onSelect={() => select(sym.id, 'symbol')}
                 onChange={(x, y) => {
                   // Gå via samme semantikk som piltastene (applySymbolMove), slik at
