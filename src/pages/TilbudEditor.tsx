@@ -3,6 +3,7 @@ import { Link, Navigate, useParams } from 'react-router-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { TopBar } from '../components/TopBar';
 import { Toolbar } from '../components/Toolbar';
+import { ToolStrip } from '../components/ToolStrip';
 import { PdfCanvas } from '../components/PdfCanvas';
 import { QuantityPanel } from '../components/QuantityPanel';
 import { PropertiesPanel } from '../components/PropertiesPanel';
@@ -191,6 +192,7 @@ export default function TilbudEditor() {
         )}
       </div>
       <TopBar tilbudId={tilbud.id} tilbudName={tilbud.name} />
+      {!focusMode && <ToolStrip />}
       <div className={`workspace ${focusMode ? 'focus-mode' : ''}`}>
         <Toolbar />
         <main className="stage-area">
