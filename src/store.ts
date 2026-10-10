@@ -1076,12 +1076,51 @@ function applySymbolMove(s: MoveSourceState, symId: string, dx: number, dy: numb
     if (!cp) return null;
     return { ...base, symbols: s.symbols.map((sy) => (sy.id === symId ? { ...sy, x: cp.x, y: cp.y } : sy)) };
   }
-  const lines = s.lines.map((l) => {
-    if (l.anchorSymbolId !== symId) return l;
+  // Revit-aktig: det ankrede segmentet S holder RETNINGEN sin. Flyttingen deles i en
+  // komponent langs S (bare portenden flytter seg → S blir lengre/kortere) og en
+  // komponent på tvers (hele S forskyves parallelt). Den andre enden av S – og
+  // naboenes delte knekkpunkt der – flyttes kun med tverr-komponenten, slik at et
+  // vinkelrett nabosegment bare forlenges/forkortes og bend-vinkelen bevares.
+  const pageLines = s.lines.filter((l) => l.page === sym.page);
+  const farMoves = new Map<string, { vertexIndex: number; x: number; y: number }[]>();
+  const anchoredMoves = new Map<string, number[]>();
+  for (const l of pageLines) {
+    if (l.anchorSymbolId !== symId) continue;
+    const n = l.points.length;
+    const ai = l.anchorEnd === 'end' ? n - 2 : 0;
+    const fi = l.anchorEnd === 'end' ? 0 : n - 2;
+    const ax = l.points[ai];
+    const ay = l.points[ai + 1];
+    const fx = l.points[fi];
+    const fy = l.points[fi + 1];
+    const len = Math.hypot(fx - ax, fy - ay) || 1;
+    const ux = (fx - ax) / len;
+    const uy = (fy - ay) / len;
+    const along = dx * ux + dy * uy;
+    const px = dx - along * ux;
+    const py = dy - along * uy;
     const pts = l.points.slice();
-    const i = l.anchorEnd === 'end' ? pts.length - 2 : 0;
-    pts[i] += dx;
-    pts[i + 1] += dy;
+    pts[ai] += dx;
+    pts[ai + 1] += dy;
+    pts[fi] += px;
+    pts[fi + 1] += py;
+    anchoredMoves.set(l.id, pts);
+    for (const nb of neighborsAtPoint(pageLines, l.id, fx, fy)) {
+      const arr = farMoves.get(nb.line.id) ?? [];
+      arr.push({ vertexIndex: nb.vertexIndex, x: fx + px, y: fy + py });
+      farMoves.set(nb.line.id, arr);
+    }
+  }
+  const lines = s.lines.map((l) => {
+    const anchored = anchoredMoves.get(l.id);
+    if (anchored) return { ...l, points: anchored };
+    const moves = farMoves.get(l.id);
+    if (!moves) return l;
+    const pts = l.points.slice();
+    for (const m of moves) {
+      pts[m.vertexIndex] = m.x;
+      pts[m.vertexIndex + 1] = m.y;
+    }
     return { ...l, points: pts };
   });
   return {
@@ -3206,7 +3245,20 @@ export const useStore = create<AppState>((set, get) => {
     if (s.selectedKind === 'symbol' && s.selectedId && s.multiSelection.size === 0) {
       const patch = applySymbolMove(s, s.selectedId, dx, dy);
       if (!patch) return;
-      if (recordAsNewStep) recordHistory();
+      if (recordAsNewStep) {
+        recordHistory();
+        // Enkeltsteg (musedrag/Flytt): avstem bend/avgreining med én gang. Piltast-
+        // serier sender recordAsNewStep=false og avstemmes ved keyup i stedet.
+        const changed = new Set(patch.lines.filter((l, i) => l !== s.lines[i]).map((l) => l.id));
+        if (changed.size > 0) {
+          const r = reconcileInPatch(
+            { ...patch, currentPage: s.currentPage, scale: s.scale },
+            changedPoints(s.lines, patch.lines, changed),
+          );
+          set({ ...patch, bends: r.bends, transitions: r.transitions, branches: r.branches });
+          return;
+        }
+      }
       set(patch);
       return;
     }
