@@ -53,6 +53,10 @@ const LIBRARY_GROUPS: { label: string; types: BuiltInSymbolType[] }[] = [
 
 const CUSTOM_GROUP = '__custom';
 
+/** Lar lange navn brytes pent etter en skråstrek (usynlig bruddpunkt) i stedet for
+ * midt i et ord – «Etterkjøler/kjølebatteri» blir to linjer. */
+const breakable = (label: string) => label.replace(/\//g, '/\u200b');
+
 /** Rør/ventilasjon-filteret over kategorikolonnen – SymbolDef.kind finnes allerede på
  * alle innebygde typer og på egendefinerte komponenter, denne dialogen brukte den
  * bare aldri til noe før nå. */
@@ -190,7 +194,7 @@ export function SymbolLibraryDialog({ onClose }: Props) {
                         title={def.label}
                       >
                         {Icon ? <Icon size={20} /> : glyph ? <GlyphPreview shape={glyph.shape} /> : null}
-                        <span>{def.label}</span>
+                        <span>{breakable(def.label)}</span>
                       </button>
                     );
                   })}
@@ -199,7 +203,7 @@ export function SymbolLibraryDialog({ onClose }: Props) {
                     <div key={c.id} className="symbol-library-card custom">
                       <button className="symbol-library-card-main" onClick={() => choose(c.id)} title={c.label}>
                         <GlyphPreview shape={c.glyphShape} color={c.color} />
-                        <span>{c.label}</span>
+                        <span>{breakable(c.label)}</span>
                       </button>
                       <button
                         className="symbol-library-card-remove"

@@ -2236,10 +2236,11 @@ input[type='range'] {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .symbol-library-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
   gap: 8px;
 }
 .symbol-library-card,
@@ -2263,8 +2264,18 @@ input[type='range'] {
   border-color: var(--accent);
   color: var(--text);
 }
+/* Lange navn (f.eks. «Etterkjøler/kjølebatteri») skal brytes INNE i kortet, ikke
+   flyte ut over nabokortene: kortet får krympe (min-width: 0), og teksten brytes ved
+   skråstrek/orddeling – eller hvor som helst hvis ett ord alene er for langt. */
+.symbol-library-card,
+.symbol-library-card-main {
+  min-width: 0;
+}
 .symbol-library-card span {
   line-height: 1.25;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }
 .symbol-library-card.custom {
   position: relative;
