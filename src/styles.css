@@ -1,65 +1,67 @@
-/* «Nordlys» – aurora-teal designsystem. Lys er standardtema for tegneverktøyet.
+/* Instrument-designsystem. Lys er standardtema for tegneverktøyet.
    Mørk slås på via data-theme="dark" på <html> (se :root[data-theme='dark'] under).
-   Aksentfargen (#14C08A) er bevisst valgt for å ligge tydelig unna alle
-   NS 3451-kategorifargene i types.ts (rød/blå/brun/oransje/grønn) slik at
-   UI-aksent og tegningsfarger aldri kan forveksles på lerretet. */
+   --bg er hovedflaten (lerret/arbeidsflate), --panel/--bg-2 er sidebar- og
+   verktøylinje-tonen. Aksentfargen (amber, #FF8A3D) er bevisst valgt for å
+   ligge tydelig unna alle NS 3451-kategorifargene i types.ts
+   (rød/blå/brun/oransje/grønn) slik at UI-aksent og tegningsfarger aldri
+   kan forveksles på lerretet. */
 :root {
-  --bg: #f6f7f5;
-  --bg-2: #ffffff;
-  --bg-3: #eef1ef;
-  --panel: #ffffff;
-  --border: #dde2de;
-  --border-soft: #e7ece8;
-  --text: #16201c;
-  --text-dim: #5c6b63;
-  --text-faint: #8b978f;
-  --accent: #14c08a;
-  --accent-2: #0e9b72;
-  --accent-grad: linear-gradient(135deg, #1ed6a0 0%, #0e9b72 100%);
-  --accent-soft: rgba(20, 192, 138, 0.12);
-  --accent-ring: rgba(20, 192, 138, 0.28);
-  --warn: #e8973a;
-  --danger: #d4553f;
-  --ok: #14c08a;
-  --shadow: 0 8px 24px rgba(16, 22, 18, 0.12);
-  --shadow-sm: 0 1px 3px rgba(16, 22, 18, 0.08), 0 4px 12px rgba(16, 22, 18, 0.06);
-  --shadow-lg: 0 24px 60px rgba(16, 22, 18, 0.22), 0 8px 24px rgba(16, 22, 18, 0.12);
+  --bg: #f5efe1;
+  --bg-2: #e5d3af;
+  --bg-3: #efe6d1;
+  --panel: #e5d3af;
+  --border: #d9c7a0;
+  --border-soft: #e3d2ab;
+  --text: #2b2620;
+  --text-dim: #6b6252;
+  --text-faint: #9a8f72;
+  --accent: #ff8a3d;
+  --accent-2: #e06b1f;
+  --accent-grad: linear-gradient(135deg, #ffa368 0%, #e06b1f 100%);
+  --accent-soft: rgba(255, 138, 61, 0.14);
+  --accent-ring: rgba(255, 138, 61, 0.3);
+  --warn: #b2560f;
+  --danger: #c23b2e;
+  --ok: #1f9566;
+  --shadow: 0 8px 24px rgba(43, 38, 32, 0.14);
+  --shadow-sm: 0 1px 3px rgba(43, 38, 32, 0.1), 0 4px 12px rgba(43, 38, 32, 0.07);
+  --shadow-lg: 0 24px 60px rgba(43, 38, 32, 0.24), 0 8px 24px rgba(43, 38, 32, 0.14);
   --radius: 10px;
   --radius-lg: 16px;
-  --hover-bg: #e7ebe6;
-  --hover-border: rgba(16, 22, 18, 0.14);
-  --canvas-void: #e3e8e4;
-  --canvas-grid: #c8cfc9;
+  --hover-bg: #ddc89a;
+  --hover-border: rgba(43, 38, 32, 0.16);
+  --canvas-void: #efe7d6;
+  --canvas-grid: #ddcda0;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   font-synthesis: none;
 }
 
 :root[data-theme='dark'] {
-  --bg: #0e1512;
-  --bg-2: #131c18;
-  --bg-3: #182019;
-  --panel: #111813;
-  --border: #24322b;
-  --border-soft: #1d2822;
-  --text: #e8f0eb;
-  --text-dim: #93a69c;
-  --text-faint: #66786e;
-  --accent: #1ed6a0;
-  --accent-2: #14c08a;
-  --accent-grad: linear-gradient(135deg, #2ee8b0 0%, #14c08a 100%);
-  --accent-soft: rgba(30, 214, 160, 0.16);
-  --accent-ring: rgba(30, 214, 160, 0.32);
-  --warn: #f0a94e;
+  --bg: #44444e;
+  --bg-2: #37353e;
+  --bg-3: #3a3842;
+  --panel: #37353e;
+  --border: #56535f;
+  --border-soft: #3f3d47;
+  --text: #f0eef2;
+  --text-dim: #9d99a6;
+  --text-faint: #7d7986;
+  --accent: #ff8a3d;
+  --accent-2: #e06b1f;
+  --accent-grad: linear-gradient(135deg, #ffa368 0%, #e06b1f 100%);
+  --accent-soft: rgba(255, 138, 61, 0.18);
+  --accent-ring: rgba(255, 138, 61, 0.34);
+  --warn: #ffb454;
   --danger: #e56a50;
-  --ok: #1ed6a0;
+  --ok: #3ecf8e;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.4);
-  --hover-bg: #24322b;
-  --hover-border: #34473d99;
-  --canvas-void: #0a0f0c;
-  --canvas-grid: #1a231d;
+  --hover-bg: #4e4c56;
+  --hover-border: #f0eef224;
+  --canvas-void: #3a3942;
+  --canvas-grid: #3f3d47;
 }
 
 /* ── Animasjoner (gjenbrukes på paneler, HUD-er, modaler osv.) ─────────── */
@@ -134,10 +136,10 @@
 @keyframes pulse-dot {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(20, 192, 138, 0.5);
+    box-shadow: 0 0 0 0 rgba(31, 149, 102, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(20, 192, 138, 0);
+    box-shadow: 0 0 0 4px rgba(31, 149, 102, 0);
   }
 }
 
@@ -164,7 +166,7 @@ body,
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
@@ -735,7 +737,7 @@ body {
 }
 .cat-kind.duct {
   color: var(--ok);
-  border-color: rgba(20, 192, 138, 0.4);
+  border-color: rgba(31, 149, 102, 0.4);
 }
 .collapse {
   max-height: 0;
@@ -1094,7 +1096,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(20, 26, 34, 0.88);
+  background: rgba(45, 43, 51, 0.88);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   padding: 8px 12px;
@@ -1148,9 +1150,9 @@ body {
   font-weight: 700;
   letter-spacing: 0.02em;
   white-space: nowrap;
-  color: var(--accent, #1ed6a0);
-  background: rgba(30, 214, 160, 0.14);
-  border: 1px solid rgba(30, 214, 160, 0.3);
+  color: var(--accent, #ff8a3d);
+  background: rgba(255, 138, 61, 0.14);
+  border: 1px solid rgba(255, 138, 61, 0.3);
   border-radius: 999px;
   cursor: default;
 }
@@ -1225,7 +1227,7 @@ body {
   min-height: 28px;
   padding: 3px 6px;
   background: rgba(255, 255, 255, 0.97);
-  border: 1px dashed #1ed6a0;
+  border: 1px dashed #ff8a3d;
   border-radius: 4px;
   font-family: inherit;
   line-height: 1.2;
@@ -1293,7 +1295,7 @@ body {
 .symbol-tooltip {
   position: absolute;
   transform: translate(-50%, calc(-100% - 14px));
-  background: rgba(20, 26, 34, 0.92);
+  background: rgba(45, 43, 51, 0.92);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
@@ -1324,7 +1326,7 @@ body {
 .branch-choice-popover {
   position: absolute;
   transform: translate(-50%, calc(-100% - 14px));
-  background: rgba(20, 26, 34, 0.94);
+  background: rgba(45, 43, 51, 0.94);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
@@ -1362,7 +1364,7 @@ body {
   position: absolute;
   transform: translate(2px, 6px);
   min-width: 190px;
-  background: rgba(20, 26, 34, 0.94);
+  background: rgba(45, 43, 51, 0.94);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
@@ -1389,7 +1391,7 @@ body {
   transition: background 0.12s, color 0.12s;
 }
 .canvas-menu-item:hover {
-  background: rgba(20, 192, 138, 0.16);
+  background: rgba(255, 138, 61, 0.18);
   color: #fff;
 }
 .canvas-menu-item.danger:hover {
@@ -1402,7 +1404,7 @@ body {
 .move-distance-input {
   position: absolute;
   transform: translate(-50%, calc(-100% - 10px));
-  background: rgba(20, 26, 34, 0.94);
+  background: rgba(45, 43, 51, 0.94);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
@@ -1426,7 +1428,7 @@ body {
 }
 .move-distance-input input:focus {
   outline: none;
-  border-color: var(--accent, #1ed6a0);
+  border-color: var(--accent, #ff8a3d);
 }
 .move-distance-input span {
   color: #c4cdd8;
@@ -1437,7 +1439,7 @@ body {
   width: 58px;
 }
 .line-entry input.focused {
-  border-color: var(--accent, #1ed6a0);
+  border-color: var(--accent, #ff8a3d);
 }
 .line-entry input::placeholder {
   color: #8b98a6;
@@ -1449,7 +1451,7 @@ body {
   bottom: 50px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(20, 26, 34, 0.88);
+  background: rgba(45, 43, 51, 0.88);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.09);
   color: #c4cdd8;
@@ -1469,13 +1471,13 @@ body {
   display: flex;
   align-items: center;
   gap: 18px;
-  background: rgba(20, 26, 34, 0.92);
+  background: rgba(45, 43, 51, 0.92);
   backdrop-filter: blur(10px);
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: #9aa7b6;
+  color: #a8a4b0;
   padding: 8px 16px;
   font-size: 12.5px;
-  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
   pointer-events: none;
   z-index: 11;
   animation: status-rise 0.25s var(--ease-out);
