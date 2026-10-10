@@ -17,6 +17,8 @@ interface Props {
    * opp av kalleren via `glyphShapeFor()` (som trenger `customComponents` fra
    * store-en, derfor løses den utenfor denne rene props-komponenten). */
   genericGlyph?: { shape: GlyphShapeId; label?: string; color?: string };
+  /** scaleY/scaleX for den omsluttende gruppen – se DamperBase. */
+  aspect?: number;
 }
 
 /** Tilluft-/avtrekksventil: firkantet diffusor-symbol (plan-visning av takdiffusor)
@@ -112,7 +114,20 @@ function MotorMark({ stroke, r }: { stroke: string; r: number }) {
  * spjeld-symbol. VAV/CAV/brannspjeld får en liten bokstav-sirkel til side, koblet
  * til dreiepunktet med en kort strek (à la aktuator-referanse). Reguleringsspjeld
  * og vanlig spjeld har ingen sirkel. */
-function DamperBase({ stroke, r, sideLabel }: { stroke: string; r: number; sideLabel?: string }) {
+function DamperBase({
+  stroke,
+  r,
+  sideLabel,
+  aspect = 1,
+}: {
+  stroke: string;
+  r: number;
+  sideLabel?: string;
+  /** scaleY/scaleX for gruppen glyfen tegnes i (se SymbolNode). Spjeld strekkes
+   * ikke-uniformt til reell lengde × tverrmål – boblen motskaleres med dette, så den
+   * forblir en rund sirkel med uforvrengt bokstav. */
+  aspect?: number;
+}) {
   const halfW = r * 0.5;
   const halfH = r * 1.05;
   return (
@@ -121,20 +136,15 @@ function DamperBase({ stroke, r, sideLabel }: { stroke: string; r: number; sideL
       <Line points={[-halfW, halfH, halfW, -halfH]} stroke={stroke} strokeWidth={1.6} />
       <Circle x={0} y={0} radius={r * 0.11} fill={stroke} />
       {sideLabel && (
-        <Group>
-          <Line points={[halfW, 0, halfW + r * 0.45, 0]} stroke={stroke} strokeWidth={1.4} />
-          <Circle
-            x={halfW + r * 0.85}
-            y={0}
-            radius={r * 0.4}
-            stroke={stroke}
-            strokeWidth={1.4}
-            fill="#fff"
-          />
+        // Boblen henger UTENFOR kanalen, vinkelrett på den (lokal +y = på tvers av
+        // kanalretningen), festet i spjeldets kant – ikke inne i kanalen langs aksen.
+        <Group y={halfH} scaleX={aspect}>
+          <Line points={[0, 0, 0, r * 0.45]} stroke={stroke} strokeWidth={1.4} />
+          <Circle x={0} y={r * 0.85} radius={r * 0.4} stroke={stroke} strokeWidth={1.4} fill="#fff" />
           <Text
             text={sideLabel}
-            x={halfW + r * 0.85 - r * 0.4}
-            y={-r * 0.17}
+            x={-r * 0.4}
+            y={r * 0.85 - r * 0.13}
             width={r * 0.8}
             align="center"
             fontSize={r * 0.26}
@@ -239,7 +249,7 @@ function GenericGlyph({ shape, stroke, label }: { shape: GlyphShapeId; stroke: s
  * Tegner et symbol sentrert i (0,0). Plassering/rotasjon/skala settes på
  * Group-en utenfor (i SymbolNode). Bruker enkle, gjenkjennbare VVS-symboler.
  */
-export function SymbolGlyph({ type, selected, showArrows = true, color, genericGlyph }: Props) {
+export function SymbolGlyph({ type, selected, showArrows = true, color, genericGlyph, aspect = 1 }: Props) {
   const stroke = selected ? SEL : (color ?? BASE);
   const sw = 2;
   const r = 11;
@@ -286,13 +296,13 @@ export function SymbolGlyph({ type, selected, showArrows = true, color, genericG
     case 'damper':
       return <DamperBase stroke={stroke} r={r} />;
     case 'vav_damper':
-      return <DamperBase stroke={stroke} r={r} sideLabel="VAV" />;
+      return <DamperBase stroke={stroke} r={r} sideLabel="VAV" aspect={aspect} />;
     case 'cav_damper':
-      return <DamperBase stroke={stroke} r={r} sideLabel="CAV" />;
+      return <DamperBase stroke={stroke} r={r} sideLabel="CAV" aspect={aspect} />;
     case 'control_damper':
       return <DamperBase stroke={stroke} r={r} />;
     case 'fire_damper':
-      return <DamperBase stroke={stroke} r={r} sideLabel="B" />;
+      return <DamperBase stroke={stroke} r={r} sideLabel="B" aspect={aspect} />;
     case 'silencer':
       // Lyddemper: rektangulær boks med forskjøvne bafler (to fra topp, én fra bunn
       // imellom) – klassisk lydfelle-symbol for kanaler.

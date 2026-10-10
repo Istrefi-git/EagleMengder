@@ -4675,6 +4675,7 @@ function SymbolNode({
           showArrows={showAirflowArrows}
           color={color}
           genericGlyph={genericGlyph}
+          aspect={nodeScale.scaleX ? nodeScale.scaleY / nodeScale.scaleX : 1}
         />
       </Group>
       {showAhuLabel && (
