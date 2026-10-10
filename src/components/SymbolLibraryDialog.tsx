@@ -43,7 +43,6 @@ const LIBRARY_GROUPS: { label: string; types: BuiltInSymbolType[] }[] = [
     label: 'Ventiler/diffusorer (kanal)',
     types: ['supply_diffuser', 'extract_diffuser', 'ceiling_diffuser', 'wall_diffuser', 'grille', 'fresh_air_tower', 'roof_hood'],
   },
-  { label: 'Kanaldeler', types: ['duct_bend_90', 'round_rect_transition', 'measurement_point', 'condensate_drain'] },
   {
     label: 'Aggregater/varmegjenvinning',
     types: ['fan', 'air_handling_unit', 'duct_heater', 'cooling_coil', 'heating_coil', 'rotary_heat_exchanger', 'cross_heat_exchanger'],
