@@ -657,7 +657,14 @@ export function PropertiesPanel() {
               value={String(sym.props[f.key] ?? f.default)}
               onChange={(e) => updateSymbol(sym.id, { props: { [f.key]: e.target.value } })}
             >
-              {f.options?.map((o) => (
+              {/* Gjeldende verdi kan ligge utenfor standardlista (f.eks. satt av «Smart
+                  dimensjon» fra kanalen) – ta den med, ellers ville feltet stått tomt. */}
+              {[
+                ...(f.options ?? []),
+                ...((f.options ?? []).includes(String(sym.props[f.key] ?? f.default))
+                  ? []
+                  : [String(sym.props[f.key] ?? f.default)]),
+              ].map((o) => (
                 <option key={o} value={o}>
                   {o}
                 </option>

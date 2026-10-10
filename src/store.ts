@@ -38,6 +38,7 @@ import {
   defaultSymbolProps,
   isRectDim,
   migrateSubId,
+  symbolDefFor,
 } from './types';
 import type { PdfDoc } from './lib/pdf';
 import { detectScaleFromPdf } from './lib/pdf';
@@ -1714,6 +1715,10 @@ interface AppState {
   cancelPendingOffLineSymbol: () => void;
   setShowAirflowArrows: (show: boolean) => void;
   setHideComponentLabels: (hide: boolean) => void;
+  /** «Smart dimensjon»: utstyr som plasseres PÅ et rør/en kanal får automatisk samme
+   * dimensjon som røret/kanalen, i stedet for sist brukte verdi. */
+  smartSymbolDimension: boolean;
+  setSmartSymbolDimension: (on: boolean) => void;
   setAreaMeasureMode: (mode: 'free' | 'rect') => void;
   addCustomSystem: (code: string) => void;
   removeCustomSystem: (code: string) => void;
@@ -1984,6 +1989,7 @@ export const useStore = create<AppState>((set, get) => {
   theme: initialSettings.theme,
   showAirflowArrows: initialSettings.showAirflowArrows,
   hideComponentLabels: initialSettings.hideComponentLabels,
+  smartSymbolDimension: true,
   areaMeasureMode: 'free',
   customSystems: initialSettings.customSystems,
   customDimensions: initialSettings.customDimensions,
@@ -2460,6 +2466,17 @@ export const useStore = create<AppState>((set, get) => {
       mountedLineId,
       systemId,
     };
+    // Smart dimensjon: ta dimensjonen fra røret/kanalen utstyret settes på (når
+    // utstyret har et dimensjonsfelt, og er av samme art – kanalutstyr på kanal,
+    // rørutstyr på rør).
+    if (get().smartSymbolDimension && mountedLineId) {
+      const host = get().lines.find((l) => l.id === mountedLineId);
+      const def = symbolDefFor(type, get().customComponents);
+      const key = def?.fields.find((f) => f.key === 'dimension' || f.key === 'dn')?.key;
+      if (host && def && key && categoryOf(host.subId)?.kind === def.kind) {
+        sym.props = { ...sym.props, [key]: host.dimension };
+      }
+    }
     set((s) => ({ symbols: [...s.symbols, sym], selectedId: sym.id, selectedKind: 'symbol' }));
   },
 
@@ -2496,6 +2513,8 @@ export const useStore = create<AppState>((set, get) => {
       persistSettings(s, { showAirflowArrows: show });
       return { showAirflowArrows: show };
     }),
+
+  setSmartSymbolDimension: (on) => set({ smartSymbolDimension: on }),
 
   setHideComponentLabels: (hide) =>
     set((s) => {

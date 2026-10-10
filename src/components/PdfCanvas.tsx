@@ -193,6 +193,8 @@ export function PdfCanvas() {
   const setHideShiftTip = useStore((s) => s.setHideShiftTip);
   const trimLineTo = useStore((s) => s.trimLineTo);
   const reconcileFittingsAt = useStore((s) => s.reconcileFittingsAt);
+  const smartSymbolDimension = useStore((s) => s.smartSymbolDimension);
+  const setSmartSymbolDimension = useStore((s) => s.setSmartSymbolDimension);
   const updateSymbol = useStore((s) => s.updateSymbol);
   const setHoveredSymbol = useStore((s) => s.setHoveredSymbol);
   const deleteSelected = useStore((s) => s.deleteSelected);
@@ -2738,6 +2740,19 @@ export function PdfCanvas() {
         return (
           <div className="draw-hud symbol-hud">
             <span className="draw-hud-label">{def.label}</span>
+            {def.fields.some((f) => f.key === 'dimension' || f.key === 'dn') && (
+              <label
+                className="symbol-hud-field symbol-hud-smart"
+                title="Smart dimensjon: utstyret får samme dimensjon som røret/kanalen du klikker på"
+              >
+                <input
+                  type="checkbox"
+                  checked={smartSymbolDimension}
+                  onChange={(e) => setSmartSymbolDimension(e.target.checked)}
+                />
+                <span>Smart dimensjon</span>
+              </label>
+            )}
             {def.fields.map((f) => (
               <label key={f.key} className="symbol-hud-field" title={`${f.label}${f.unit ? ` (${f.unit})` : ''} for neste plassering`}>
                 <span>{f.label}</span>
@@ -4585,9 +4600,14 @@ function symbolRenderScale(
   if (box && metersPerPixel && crossMm != null) {
     // Avlang boks-glyph (spjeld/lyddemper): lengden går langs kanalens retning (lokal
     // X, se sym.rotation i SymbolNode), tverrmålet på tvers (lokal Y).
+    // Nedre grense PÅ TVERS er den samme som kanalen selv tegnes med (5 skjermpiksler,
+    // se ductRuns-halfWidths) – ikke symbolenes vanlige 12px. Ellers ville utstyret
+    // blitt tykkere enn kanalen det sitter på ved utzooming, mens lengden sto i ro,
+    // og proporsjonene så ødelagte ut. Lengden er alltid reell (men aldri kortere enn
+    // tverrmålet, så boksen ikke kollapser til en strek).
     const lengthMm = symbolLengthMm(sym) ?? crossMm * 1.5;
-    const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), floorPx);
-    const cPx = Math.max(mmToPx(crossMm, metersPerPixel), floorPx);
+    const cPx = Math.max(mmToPx(crossMm, metersPerPixel), 5 * invScale);
+    const lPx = Math.max(mmToPx(lengthMm, metersPerPixel), cPx * 0.6);
     return { scaleX: lPx / box.lengthUnits, scaleY: cPx / box.crossUnits };
   }
   if (crossMm != null && metersPerPixel) {
