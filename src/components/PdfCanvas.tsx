@@ -2241,7 +2241,7 @@ export function PdfCanvas() {
 
   // Egen farge på det Konva-tegnede siktet (og på dets snap-badge) per verktøy –
   // samme palett som spøkelses-forhåndsvisningen ved Flytt/Kopier bruker.
-  const crosshairColor = tool === 'copy' ? '#4c9aff' : isTransformTool ? '#14c08a' : '#7c4dff';
+  const crosshairColor = tool === 'copy' ? '#4c9aff' : isTransformTool ? '#ff8a3d' : '#7c4dff';
 
   const cursorStyle =
     isPan || isSpacePan
@@ -3155,11 +3155,11 @@ export function PdfCanvas() {
             <Group x={cursor.x} y={cursor.y}>
               <Circle
                 radius={7 * invScale}
-                stroke={measureSnapKind === 'close' ? '#14c08a' : crosshairColor}
+                stroke={measureSnapKind === 'close' ? '#ff8a3d' : crosshairColor}
                 strokeWidth={1.5 * invScale}
                 fill="#fff"
               />
-              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#14c08a' : crosshairColor} />
+              <Circle radius={2 * invScale} fill={measureSnapKind === 'close' ? '#ff8a3d' : crosshairColor} />
               <Text
                 text={
                   measureSnapKind === 'endpoint'
@@ -3173,7 +3173,7 @@ export function PdfCanvas() {
                 x={10 * invScale}
                 y={-16 * invScale}
                 fontSize={11 * invScale}
-                fill={measureSnapKind === 'close' ? '#14c08a' : crosshairColor}
+                fill={measureSnapKind === 'close' ? '#ff8a3d' : crosshairColor}
                 fontStyle="bold"
               />
             </Group>
@@ -3185,7 +3185,7 @@ export function PdfCanvas() {
               width={Math.abs(rubberBand.x1 - rubberBand.x0)}
               height={Math.abs(rubberBand.y1 - rubberBand.y0)}
               fill="rgba(20,192,138,0.12)"
-              stroke="#14c08a"
+              stroke="#ff8a3d"
               strokeWidth={1 * invScale}
               dash={[5 * invScale, 4 * invScale]}
             />
@@ -3334,14 +3334,14 @@ export function PdfCanvas() {
             <>
               <Line
                 points={hoverSnap.line.points}
-                stroke="#14c08a"
+                stroke="#ff8a3d"
                 strokeWidth={10 * invScale}
                 opacity={0.35}
                 lineCap="round"
                 lineJoin="round"
               />
               <Group x={hoverSnap.x} y={hoverSnap.y}>
-                <Circle radius={6 * invScale} fill="#14c08a" opacity={0.9} />
+                <Circle radius={6 * invScale} fill="#ff8a3d" opacity={0.9} />
                 <Text
                   x={10 * invScale}
                   y={-18 * invScale}
@@ -3386,24 +3386,24 @@ export function PdfCanvas() {
                   visuelle språk som måleverktøyets forhåndsvisning. */}
               <Line
                 points={[transformBase.x, transformBase.y, cursor.x, cursor.y]}
-                stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                stroke={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                 strokeWidth={1.5 * invScale}
                 dash={[6 * invScale, 4 * invScale]}
               />
-              <Circle x={transformBase.x} y={transformBase.y} radius={3 * invScale} fill={tool === 'copy' ? '#4c9aff' : '#14c08a'} />
+              <Circle x={transformBase.x} y={transformBase.y} radius={3 * invScale} fill={tool === 'copy' ? '#4c9aff' : '#ff8a3d'} />
               <Text
                 x={cursor.x + 10 * invScale}
                 y={cursor.y - 18 * invScale}
                 text={formatLengthMm(distance(transformBase.x, transformBase.y, cursor.x, cursor.y), scale.metersPerPixel)}
                 fontSize={12 * invScale}
-                fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                fill={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                 fontStyle="bold"
               />
               {movePreview.lines.map((l) => (
                 <Line
                   key={l.id}
                   points={l.points}
-                  stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                  stroke={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                   strokeWidth={Math.max(mmToPx(dimensionDiameterMm(l.dimension), scale.metersPerPixel), 5 * invScale)}
                   opacity={0.45}
                   lineCap="round"
@@ -3417,7 +3417,7 @@ export function PdfCanvas() {
                     x={m.x}
                     y={m.y}
                     radius={5 * invScale}
-                    fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                    fill={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                     opacity={0.55}
                   />
                 ),
@@ -3428,7 +3428,7 @@ export function PdfCanvas() {
                   x={t.labelX}
                   y={t.labelY}
                   radius={5 * invScale}
-                  fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                  fill={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                   opacity={0.55}
                 />
               ))}
@@ -3438,7 +3438,7 @@ export function PdfCanvas() {
                   x={a.x}
                   y={a.y}
                   radius={6 * invScale}
-                  fill={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                  fill={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                   opacity={0.4}
                 />
               ))}
@@ -3446,7 +3446,7 @@ export function PdfCanvas() {
                 <Line
                   key={m.id}
                   points={m.points}
-                  stroke={tool === 'copy' ? '#4c9aff' : '#14c08a'}
+                  stroke={tool === 'copy' ? '#4c9aff' : '#ff8a3d'}
                   strokeWidth={2 * invScale}
                   opacity={0.5}
                   dash={[6 * invScale, 4 * invScale]}
@@ -4159,7 +4159,7 @@ function BendMarker({
         <Group>
           <Line
             points={[0, 0, plusX, plusY]}
-            stroke="#14c08a"
+            stroke="#ff8a3d"
             strokeWidth={1.5 * invScale}
             dash={[4 * invScale, 3 * invScale]}
             listening={false}
@@ -4168,7 +4168,7 @@ function BendMarker({
             x={plusX}
             y={plusY}
             radius={plusR}
-            fill="#14c08a"
+            fill="#ff8a3d"
             stroke="#fff"
             strokeWidth={1.5 * invScale}
             onMouseDown={(e) => {
