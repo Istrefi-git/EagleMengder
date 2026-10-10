@@ -8,6 +8,7 @@ import type {
   ClampEntity,
   DuctCapEntity,
   CustomComponentDef,
+  AhuSide,
   DrawingEntity,
   LineEntity,
   LineStyleId,
@@ -687,7 +688,19 @@ export function applyMovePlan(s: MoveSourceState, plan: MovePlan, dx: number, dy
   const shift = (pts: number[]) => pts.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
 
   return {
-    lines: s.lines.map((l) => (lineIds.has(l.id) ? { ...l, points: shift(l.points) } : l)),
+    lines: s.lines.map((l) => {
+      if (lineIds.has(l.id)) return { ...l, points: shift(l.points) };
+      // En kanal som ikke selv flyttes, men er ankret i et utstyr som flyttes: kun den
+      // ankrede enden følger med (kanalen strekkes), se applySymbolMove.
+      if (l.anchorSymbolId && symbolIds.has(l.anchorSymbolId)) {
+        const pts = l.points.slice();
+        const i = l.anchorEnd === 'end' ? pts.length - 2 : 0;
+        pts[i] += dx;
+        pts[i + 1] += dy;
+        return { ...l, points: pts };
+      }
+      return l;
+    }),
     bends: s.bends.map((b) => (bendIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
     transitions: s.transitions.map((t) => (transitionIds.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
     branches: s.branches.map((b) => (branchIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b)),
@@ -1007,6 +1020,77 @@ function applyVertexMove(
   };
 }
 
+/** Verdensposisjon for en aggregat-port (eller midtpunktet på en kortside, med
+ * `fx = 0`), gitt brøk av bredde/lengde i aggregatets lokale koordinater (se AHU_PORTS
+ * i types.ts). Samme mål som symbolRenderScale (PdfCanvas) bruker for glyfen:
+ * lokal x = bredde, lokal y = lengde, rotert med `sym.rotation`. Uten målestokk brukes
+ * glyfens nominelle 22-enheters boks. Returnerer også utretningen (enhetsvektor ut av
+ * kortsiden). */
+export function ahuPointWorld(
+  sym: SymbolEntity,
+  fx: number,
+  fy: number,
+  mpp: number | null,
+): { x: number; y: number; outX: number; outY: number } {
+  const widthMm = Number(sym.props.width) || 1200;
+  const lengthMm = Number(sym.props.length) || 2000;
+  const w = mpp ? mmToPx(widthMm, mpp) : 22;
+  const l = mpp ? mmToPx(lengthMm, mpp) : 22;
+  const lx = fx * w;
+  const ly = fy * l;
+  const rad = (sym.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const sign = fy < 0 ? -1 : 1;
+  return {
+    x: sym.x + lx * cos - ly * sin,
+    y: sym.y + lx * sin + ly * cos,
+    outX: -sign * sin,
+    outY: sign * cos,
+  };
+}
+
+/** Piltast-/flytt-semantikk for ETT valgt utstyr:
+ *  - Montert på en linje (`mountedLineId`): ny posisjon projiseres tilbake på vertslinja,
+ *    så et spjeld glir langs kanalen i stedet for å forlate den.
+ *  - Ellers: utstyret flyttes fritt, og hver linje-ende som er ankret i det
+ *    (`anchorSymbolId`, f.eks. kanaler tegnet fra aggregatets pluss) flyttes med – kun
+ *    den ankrede enden, så kanalen strekkes og den andre enden står fast. */
+function applySymbolMove(s: MoveSourceState, symId: string, dx: number, dy: number): MoveDrawPatch | null {
+  const sym = s.symbols.find((sy) => sy.id === symId && sy.page === s.currentPage);
+  if (!sym) return null;
+  const base: MoveDrawPatch = {
+    lines: s.lines,
+    symbols: s.symbols,
+    transitions: s.transitions,
+    branches: s.branches,
+    bends: s.bends,
+    tags: s.tags,
+    clamps: s.clamps,
+    annotations: s.annotations,
+    measurements: s.measurements,
+  };
+  const host = sym.mountedLineId ? s.lines.find((l) => l.id === sym.mountedLineId) : undefined;
+  if (host) {
+    const cp = closestPointOnPolyline(host.points, { x: sym.x + dx, y: sym.y + dy });
+    if (!cp) return null;
+    return { ...base, symbols: s.symbols.map((sy) => (sy.id === symId ? { ...sy, x: cp.x, y: cp.y } : sy)) };
+  }
+  const lines = s.lines.map((l) => {
+    if (l.anchorSymbolId !== symId) return l;
+    const pts = l.points.slice();
+    const i = l.anchorEnd === 'end' ? pts.length - 2 : 0;
+    pts[i] += dx;
+    pts[i + 1] += dy;
+    return { ...l, points: pts };
+  });
+  return {
+    ...base,
+    lines,
+    symbols: s.symbols.map((sy) => (sy.id === symId ? { ...sy, x: sy.x + dx, y: sy.y + dy } : sy)),
+  };
+}
+
 export interface ViewTransform {
   scale: number;
   x: number;
@@ -1047,7 +1131,8 @@ export interface PendingBranchChoice {
  * fortsett). `x,y` er punktet menyen/handlingen skal virke på (i bildekoordinater). */
 export type CanvasMenuTarget =
   | { type: 'lineBody'; lineId: string; x: number; y: number; angleDeg: number }
-  | { type: 'openEnd'; lineId: string; fromStart: boolean; x: number; y: number };
+  | { type: 'openEnd'; lineId: string; fromStart: boolean; x: number; y: number }
+  | { type: 'ahuSide'; symbolId: string; side: AhuSide; x: number; y: number };
 
 export interface CanvasMenuState {
   target: CanvasMenuTarget;
@@ -1521,6 +1606,9 @@ interface AppState {
     dimension?: string,
     systemId?: string,
     anchor?: { x: number; y: number },
+    /** Kanalen er tegnet ut fra en port på dette utstyret – første segments START
+     * ankres i det (følger utstyret ved flytting, se applySymbolMove). */
+    startAnchorSymbolId?: string,
   ) => void;
   /** Deler en linje i to ved (x,y) – brukt både av midtpunkt-håndtaket (legge til et
    * knekkpunkt) og «Del»-verktøyet (klikk hvor som helst på et rør/kanal for å dele
@@ -2093,7 +2181,7 @@ export const useStore = create<AppState>((set, get) => {
     set((s) => ({ lines: [...s.lines, line], selectedId: line.id, selectedKind: 'line' }));
   },
 
-  addLineRun: (subId, points, material, dimension, systemId, anchor) => {
+  addLineRun: (subId, points, material, dimension, systemId, anchor, startAnchorSymbolId) => {
     if (points.length < 4) return;
     recordHistory();
     const sub = SUBCATEGORIES[subId];
@@ -2112,6 +2200,7 @@ export const useStore = create<AppState>((set, get) => {
         dimension: finalDimension,
         points: [points[i], points[i + 1], points[i + 2], points[i + 3]],
         systemId,
+        ...(i === 0 && startAnchorSymbolId ? { anchorSymbolId: startAnchorSymbolId, anchorEnd: 'start' as const } : {}),
       });
     }
     // `anchor` (forrige punkt på røret man fortsetter fra) tas kun med i selve
@@ -3112,6 +3201,15 @@ export const useStore = create<AppState>((set, get) => {
 
   moveSelection: (dx, dy, recordAsNewStep = true) => {
     const s = get();
+    // Nøyaktig ett utstyr valgt: egen semantikk (se applySymbolMove) – montert utstyr
+    // glir langs kanalen sin, og kanalender som er ankret i utstyret følger med.
+    if (s.selectedKind === 'symbol' && s.selectedId && s.multiSelection.size === 0) {
+      const patch = applySymbolMove(s, s.selectedId, dx, dy);
+      if (!patch) return;
+      if (recordAsNewStep) recordHistory();
+      set(patch);
+      return;
+    }
     const plan = planMove(s);
     if (!plan) return;
     if (recordAsNewStep) recordHistory();

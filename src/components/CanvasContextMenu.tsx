@@ -1,9 +1,9 @@
 import { CircleSlash, GitBranch, Move, Wrench, Trash2 } from 'lucide-react';
 import { useStore } from '../store';
 import type { ViewTransform, CanvasMenuTarget } from '../store';
-import { categoryOf } from '../types';
+import { AHU_PORTS, SUBCATEGORIES, categoryOf } from '../types';
 
-export type CanvasMenuCommand = 'branch' | 'clamp' | 'move' | 'delete' | 'continue' | 'cap';
+export type CanvasMenuCommand = 'branch' | 'clamp' | 'move' | 'delete' | 'continue' | 'cap' | `ahu:${string}`;
 
 /** Høyreklikk-meny for et rør/kanal, modellert på BranchChoicePopover (samme
  * verden→skjerm-posisjonering, samme flytende-panel-stil) – men med en
@@ -23,7 +23,9 @@ export function CanvasContextMenu({
   // arten (rør/kanal) hentes fra selve linjen for å velge riktig ord i etikettene.
   // MÅ kalles ubetinget (Rules of Hooks) – derfor FØR den tidlige returen under,
   // selv om resultatet kun brukes når menu finnes.
-  const line = useStore((s) => (menu ? s.lines.find((l) => l.id === menu.target.lineId) : undefined));
+  const line = useStore((s) =>
+    menu && 'lineId' in menu.target ? s.lines.find((l) => 'lineId' in menu.target && l.id === menu.target.lineId) : undefined,
+  );
 
   if (!menu) return null;
   const screenX = menu.x * view.scale + view.x;
@@ -40,7 +42,14 @@ export function CanvasContextMenu({
 
   return (
     <div className="canvas-menu" style={{ left: screenX, top: screenY }}>
-      {menu.target.type === 'openEnd' ? (
+      {menu.target.type === 'ahuSide' ? (
+        AHU_PORTS.filter((p) => menu.target.type === 'ahuSide' && p.side === menu.target.side).map((p) => (
+          <button key={p.subId} className="canvas-menu-item" onClick={() => run(`ahu:${p.subId}`)}>
+            <GitBranch size={14} />
+            Tegn {SUBCATEGORIES[p.subId]?.label.toLowerCase() ?? p.subId}
+          </button>
+        ))
+      ) : menu.target.type === 'openEnd' ? (
         <>
           <button className="canvas-menu-item" onClick={() => run('continue')}>
             <GitBranch size={14} />

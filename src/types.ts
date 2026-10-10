@@ -215,6 +215,10 @@ export interface LineEntity {
   points: number[];
   /** Valgfri egendefinert systemkode (f.eks. «360.001»), satt opp i Innstillinger */
   systemId?: string;
+  /** Satt når kanalen er tegnet ut fra en port på et utstyr (f.eks. aggregatets
+   * pluss-håndtak): den enden (`anchorEnd`) følger utstyret når det flyttes. */
+  anchorSymbolId?: string;
+  anchorEnd?: 'start' | 'end';
 }
 
 export interface SymbolEntity {
@@ -413,6 +417,18 @@ export interface ScaleState {
  * uendret når `currentPage` betyr «aktiv tegnings id» i stedet for et rått PDF-
  * sidetall. Stabil og økende (ikke en array-indeks), så den aldri kolliderer med en
  * annen tegnings id etter at tegninger er fjernet. */
+/** Porter på et ventilasjonsaggregat, i aggregatets LOKALE koordinater som brøk av
+ * bredde (x, −0.5..0.5) og lengde (y, −0.5..0.5). Kortsidene ligger ved y = ±0.5:
+ * side A har tilluft/avtrekk, side B har avkast/inntak. Plusset per side sitter
+ * midt på kortsiden (x = 0). */
+export type AhuSide = 'A' | 'B';
+export const AHU_PORTS: { side: AhuSide; subId: string; fx: number; fy: number }[] = [
+  { side: 'A', subId: '36.tilluft', fx: -0.25, fy: -0.5 },
+  { side: 'A', subId: '36.avtrekk', fx: 0.25, fy: -0.5 },
+  { side: 'B', subId: '36.avkast', fx: -0.25, fy: 0.5 },
+  { side: 'B', subId: '36.inntak', fx: 0.25, fy: 0.5 },
+];
+
 export interface DrawingEntity {
   id: number;
   /** Vises i tegningsvelgeren – som regel PDF-ens filnavn (+ « – side N» ved en

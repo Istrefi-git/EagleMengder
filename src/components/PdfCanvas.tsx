@@ -3,10 +3,11 @@ import { Arrow, Circle, Ellipse, Group, Image as KonvaImage, Layer, Line, Rect, 
 import type Konva from 'konva';
 import { FileSearch, Lightbulb, Plus, X } from 'lucide-react';
 import { useStore } from '../store';
-import { applyMovePlan, changedPoints, clampScale, findConnectedLineIds, openEndsOf, planMove, sharesPoint } from '../store';
+import { ahuPointWorld, applyMovePlan, changedPoints, clampScale, findConnectedLineIds, openEndsOf, planMove, sharesPoint } from '../store';
 import type { MovePlan, CanvasMenuTarget } from '../store';
 import { renderPage } from '../lib/pdf';
 import {
+  AHU_PORTS,
   CATEGORIES,
   DEFAULT_SYMBOL_LENGTH_MM,
   LINE_STYLE_LABEL,
@@ -299,6 +300,12 @@ export function PdfCanvas() {
   // som kan ha endret seg – både der punktet landet OG der det eventuelt lå før (en
   // bend/avgreining kan ha blitt foreldreløs akkurat der).
   const vertexDragOriginRef = useRef<{ x: number; y: number } | null>(null);
+  // Pågående piltast-serie: linjene FØR første trykk, slik at keyup kan gi C5-motoren
+  // både gamle og nye endepunkter (se finishArrowBatch i tastatur-effekten).
+  const arrowBatchRef = useRef<{ before: LineEntity[] } | null>(null);
+  // Id til utstyret (aggregatet) en pågående tegning er startet fra via et pluss-
+  // håndtak – første segment ankres i det når tegningen fullføres (addLineRun).
+  const pendingAnchorRef = useRef<string | null>(null);
   // Numerisk avstandsinntasting (Revit/AutoCAD-stil): første siffertast under en
   // pågående flytte-/kopier-gest åpner dette feltet; Enter flytter/kopierer nøyaktig
   // den oppgitte avstanden (mm) langs retningen pekeren peker akkurat nå.
@@ -478,6 +485,7 @@ export function PdfCanvas() {
         // Avbryt all pågående tegning/markup.
         setDraftPoints([]);
         setContinuationAnchor(null);
+        pendingAnchorRef.current = null;
         setLineEntry(null);
         setCalibPoints([]);
         setMeasureDraftPoints([]);
@@ -616,16 +624,30 @@ export function PdfCanvas() {
       } else if (
         tool === 'select' &&
         (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
-        (selectedKind === 'line' || multiSelection.size > 0)
+        (multiSelection.size > 0 ||
+          selectedKind === 'line' ||
+          selectedKind === 'symbol' ||
+          selectedKind === 'annotation' ||
+          selectedKind === 'measurement' ||
+          selectedKind === 'bend' ||
+          selectedKind === 'transition' ||
+          selectedKind === 'branch')
       ) {
-        // Flytter valgt(e) kanal/rør ett skjermpiksel av gangen (Shift for et større hopp).
-        // moveSelection dispatcher internt til riktig semantikk (vinkelbevarende
-        // én-linje vs. rigid strekning), akkurat som Flytt-verktøyet – se planMove.
+        // Flytter utvalget ett skjermpiksel av gangen (Shift for et større hopp).
+        // moveSelection dispatcher internt til riktig semantikk: én linje (naboer
+        // strekkes), ett utstyr (glir langs kanalen / drar ankrede kanalender med) eller
+        // rigid fler-entitets-flytting – se planMove/applySymbolMove i store.ts.
+        // Hele tastetrykk-serien er ÉTT angre-steg, og delene (bend/avgreining) avstemmes
+        // først når tasten slippes (se keyup-lytteren under) – ikke per repetisjon.
         e.preventDefault();
+        if (!arrowBatchRef.current) {
+          arrowBatchRef.current = { before: useStore.getState().lines };
+          beginHistoryBatch();
+        }
         const step = (e.shiftKey ? 10 : 1) * invScale;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        moveSelection(dx, dy, !e.repeat);
+        moveSelection(dx, dy, false);
       } else if (
         tool === 'select' &&
         (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
@@ -652,8 +674,39 @@ export function PdfCanvas() {
         nudgeClamp(selectedId, dx, dy, !e.repeat);
       }
     };
+    // Avslutter en piltast-serie: avstem delene i alle knuter som flyttet seg, og lukk
+    // angre-batchen. Kjøres ved keyup på en piltast, og som sikkerhetsnett ved blur
+    // (ellers kunne batchen bli stående åpen hvis vinduet mister fokus midt i en serie).
+    const finishArrowBatch = () => {
+      const batch = arrowBatchRef.current;
+      if (!batch) return;
+      arrowBatchRef.current = null;
+      const after = useStore.getState().lines;
+      const beforeById = new Map(batch.before.map((l) => [l.id, l]));
+      const changed = new Set(
+        after
+          .filter((l) => {
+            const b = beforeById.get(l.id);
+            return b && b.points.some((v, i) => v !== l.points[i]);
+          })
+          .map((l) => l.id),
+      );
+      if (changed.size > 0) reconcileFittingsAt(changedPoints(batch.before, after, changed));
+      endHistoryBatch();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        finishArrowBatch();
+      }
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', finishArrowBatch);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', finishArrowBatch);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     draftPoints,
@@ -803,6 +856,7 @@ export function PdfCanvas() {
       } else {
         setDraftPoints([]);
         setContinuationAnchor(null);
+        pendingAnchorRef.current = null;
       }
     } else {
       setDraftDimension(null);
@@ -1068,7 +1122,9 @@ export function PdfCanvas() {
           draftDimension ?? undefined,
           draftSystemId || undefined,
           continuationAnchor ?? undefined,
+          pendingAnchorRef.current ?? undefined,
         );
+        pendingAnchorRef.current = null;
         setContinuationAnchor(null);
         setDraftPoints([]);
         setCursor(null);
@@ -1165,7 +1221,9 @@ export function PdfCanvas() {
         draftDimension ?? undefined,
         draftSystemId || undefined,
         continuationAnchor ?? undefined,
+        pendingAnchorRef.current ?? undefined,
       );
+      pendingAnchorRef.current = null;
       setContinuationAnchor(null);
       addTransition(activeSubId, activeMaterial, draftDimension ?? '', newDimension, lastX, lastY);
       setDraftPoints([lastX, lastY]);
@@ -1221,6 +1279,22 @@ export function PdfCanvas() {
    * åpen en stund, og linjen kan i mellomtiden ha blitt slettet eller endret. */
   const handleCanvasMenuCommand = useCallback(
     (target: CanvasMenuTarget, command: CanvasMenuCommand) => {
+      if (target.type === 'ahuSide') {
+        const subId = command.startsWith('ahu:') ? command.slice(4) : null;
+        const sym = useStore.getState().symbols.find((sy) => sy.id === target.symbolId);
+        const port = AHU_PORTS.find((p) => p.side === target.side && p.subId === subId);
+        if (!sym || !port || !subId) return;
+        const pt = ahuPointWorld(sym, port.fx, port.fy, useStore.getState().scale.metersPerPixel);
+        const sub = SUBCATEGORIES[subId];
+        const cfg = lineConfig[subId];
+        setLineSelection(subId, cfg?.material ?? sub.materials[0], cfg?.dimension ?? sub.dimensions[0]);
+        preserveDraftRef.current = true;
+        pendingAnchorRef.current = sym.id;
+        setDraftPoints([pt.x, pt.y]);
+        setContinuationAnchor(null);
+        setShowShiftTip(true);
+        return;
+      }
       const line = useStore.getState().lines.find((l) => l.id === target.lineId);
       if (!line) return;
 
@@ -2970,10 +3044,65 @@ export function PdfCanvas() {
                       : undefined
                 }
                 onSelect={() => select(sym.id, 'symbol')}
-                onChange={(x, y) => updateSymbol(sym.id, { x, y })}
+                onChange={(x, y) => {
+                  // Gå via samme semantikk som piltastene (applySymbolMove), slik at
+                  // ankrede kanalender følger med og montert utstyr blir på kanalen.
+                  const cur = useStore.getState().symbols.find((sy) => sy.id === sym.id);
+                  if (cur && selectedId === sym.id && multiSelection.size === 0) {
+                    moveSelection(x - cur.x, y - cur.y, true);
+                  } else {
+                    updateSymbol(sym.id, { x, y });
+                  }
+                }}
                 onHover={(hovering) => setHoveredSymbol(hovering ? sym.id : null)}
               />
             ))}
+          {/* Pluss-håndtak på kortsidene av et merket ventilasjonsaggregat – klikk gir
+              valget mellom de to kanaltypene som hører til den siden (se AHU_PORTS). */}
+          {tool === 'select' &&
+            visibleSymbols
+              .filter((sym) => sym.type === 'air_handling_unit' && sym.id === selectedId)
+              .flatMap((sym) =>
+                (['A', 'B'] as const).map((side) => {
+                  const edge = ahuPointWorld(sym, 0, side === 'A' ? -0.5 : 0.5, scale.metersPerPixel);
+                  const offset = 18 * invScale;
+                  const cx = edge.x + edge.outX * offset;
+                  const cy = edge.y + edge.outY * offset;
+                  const r = 8 * invScale;
+                  const arm = r * 0.5;
+                  const open = (e: Konva.KonvaEventObject<MouseEvent>) => {
+                    e.cancelBubble = true;
+                    e.evt.preventDefault();
+                    setCanvasMenu({ target: { type: 'ahuSide', symbolId: sym.id, side, x: cx, y: cy }, x: cx, y: cy });
+                  };
+                  return (
+                    <Group key={`ahu-plus-${sym.id}-${side}`}>
+                      <Line
+                        points={[edge.x, edge.y, cx, cy]}
+                        stroke="#2d9cdb"
+                        strokeWidth={1.5 * invScale}
+                        dash={[4 * invScale, 3 * invScale]}
+                        listening={false}
+                      />
+                      <Circle
+                        x={cx}
+                        y={cy}
+                        radius={r}
+                        fill="#2d9cdb"
+                        stroke="#fff"
+                        strokeWidth={1.5 * invScale}
+                        onMouseDown={(e) => {
+                          if (e.evt.button !== 0) return;
+                          open(e);
+                        }}
+                        onContextMenu={open}
+                      />
+                      <Line points={[cx - arm, cy, cx + arm, cy]} stroke="#fff" strokeWidth={2 * invScale} listening={false} />
+                      <Line points={[cx, cy - arm, cx, cy + arm]} stroke="#fff" strokeWidth={2 * invScale} listening={false} />
+                    </Group>
+                  );
+                }),
+              )}
           {pageTransitions.map((t) => (
             <TransitionMarker
               key={t.id}
